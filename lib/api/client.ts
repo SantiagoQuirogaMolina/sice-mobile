@@ -15,19 +15,28 @@ const ACCESS_KEY = 'sice.accessToken';
 const REFRESH_KEY = 'sice.refreshToken';
 
 /**
- * URL del backend. En dev por default apuntamos al backend de Railway
- * (mismo que usa la web). El usuario puede sobreescribir con EXPO_PUBLIC_API_URL.
+ * URL del backend.
+ *
+ * Por default apunta al backend de Railway (producción) para que funcione
+ * desde el primer arranque sin configuración en dispositivos físicos.
+ *
+ * Si querés apuntar a un backend local:
+ *   1. Crear .env en sice-mobile/ con:
+ *      EXPO_PUBLIC_API_URL=http://192.168.X.X:4000
+ *   2. Reiniciar Metro con npm start
+ *
+ * NOTA: 10.0.2.2:4000 SOLO funciona en emulador Android. En celular físico
+ * conectado por WiFi, hay que usar la IP LAN de la PC.
  */
 function resolveApiUrl(): string {
-  // Permitir override por env (Expo lee EXPO_PUBLIC_* vars)
+  // 1. Override explícito por env (Expo lee EXPO_PUBLIC_* vars)
   const fromEnv = process.env.EXPO_PUBLIC_API_URL;
   if (fromEnv) return fromEnv;
 
-  // Fallback al app.json
+  // 2. Fallback al apiUrl del app.json (production Railway por default)
   const extra = Constants.expoConfig?.extra as
     | { apiUrl?: string; apiUrlDev?: string }
     | undefined;
-  if (__DEV__ && extra?.apiUrlDev) return extra.apiUrlDev;
   return extra?.apiUrl ?? 'https://sice-backend-production.up.railway.app';
 }
 
