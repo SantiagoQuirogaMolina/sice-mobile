@@ -10,6 +10,7 @@ import { useEffect, useState } from 'react';
 import {
   KeyboardAvoidingView,
   Platform,
+  Pressable,
   ScrollView,
   StyleSheet,
   Text,
@@ -26,6 +27,37 @@ import {
   radii,
   spacing,
 } from '../../lib/theme/tokens';
+
+/**
+ * DEMO_OPERATORS — auto-fill rápido para los operadores seeded en el backend.
+ * Espejo del flujo que tenemos en la web. Solo mostramos roles que pueden
+ * usar la app móvil (gestor/asistente, ambos "operador de campo" tras Sprint 7).
+ *
+ * En producción real con un cliente final, esta sección se oculta condicionalmente
+ * (ver __DEV__ check abajo). Por ahora la dejamos visible para test.
+ */
+const DEMO_OPERATORS = [
+  {
+    email: 'gestor@entidad.com',
+    label: 'Andrés Pulido',
+    sub: 'gestor · Tunja',
+    initials: 'AP',
+  },
+  {
+    email: 'asistente@entidad.com',
+    label: 'María Cárdenas',
+    sub: 'gestor · Tunja',
+    initials: 'MC',
+  },
+  {
+    email: 'maria.gestora@tunja.gov.co',
+    label: 'María Cárdenas (alt)',
+    sub: 'gestor · Tunja',
+    initials: 'MC',
+  },
+];
+
+const DEMO_PASSWORD = 'demo123';
 
 export default function LoginScreen() {
   const router = useRouter();
@@ -105,6 +137,45 @@ export default function LoginScreen() {
           </View>
         </View>
 
+        {/* Demo login chips — pre-llena email+pass de operadores seeded */}
+        {__DEV__ && (
+          <View style={styles.demoSection}>
+            <Text style={styles.demoTitle}>Acceso rápido (demo)</Text>
+            <Text style={styles.demoSubtitle}>
+              Toca un operador para autollenar credenciales · contraseña{' '}
+              <Text style={styles.demoMono}>demo123</Text>
+            </Text>
+            <View style={styles.chipsWrap}>
+              {DEMO_OPERATORS.map((op) => (
+                <Pressable
+                  key={op.email}
+                  onPress={() => {
+                    setEmail(op.email);
+                    setPassword(DEMO_PASSWORD);
+                  }}
+                  disabled={isLoading}
+                  style={({ pressed }) => [
+                    styles.chip,
+                    pressed && { opacity: 0.7 },
+                  ]}
+                >
+                  <View style={styles.chipAvatar}>
+                    <Text style={styles.chipAvatarText}>{op.initials}</Text>
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.chipLabel} numberOfLines={1}>
+                      {op.label}
+                    </Text>
+                    <Text style={styles.chipSub} numberOfLines={1}>
+                      {op.sub}
+                    </Text>
+                  </View>
+                </Pressable>
+              ))}
+            </View>
+          </View>
+        )}
+
         <Text style={styles.footer}>
           Si tu cuenta tiene 2FA o requiere cambio de contraseña, ingresa
           primero desde la web. Esta app es para uso en campo.
@@ -181,5 +252,63 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginTop: spacing.xl,
     paddingHorizontal: spacing.lg,
+  },
+  demoSection: {
+    marginTop: spacing.xl,
+  },
+  demoTitle: {
+    color: colors.cyan,
+    fontSize: fontSizes.xs,
+    fontWeight: fontWeights.bold,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+    textAlign: 'center',
+  },
+  demoSubtitle: {
+    color: colors.textMuted,
+    fontSize: fontSizes.xs,
+    textAlign: 'center',
+    marginTop: spacing.xs,
+    marginBottom: spacing.md,
+  },
+  demoMono: {
+    fontFamily: Platform.OS === 'android' ? 'monospace' : 'Menlo',
+    color: colors.cyan,
+  },
+  chipsWrap: {
+    gap: spacing.sm,
+  },
+  chip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+    backgroundColor: colors.bgCard,
+    borderRadius: radii.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    padding: spacing.md,
+  },
+  chipAvatar: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: colors.cyanSoft,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  chipAvatarText: {
+    color: colors.cyan,
+    fontSize: fontSizes.xs,
+    fontWeight: fontWeights.bold,
+  },
+  chipLabel: {
+    color: colors.textPrimary,
+    fontSize: fontSizes.sm,
+    fontWeight: fontWeights.semibold,
+  },
+  chipSub: {
+    color: colors.textMuted,
+    fontSize: fontSizes.xs,
+    marginTop: 2,
   },
 });
