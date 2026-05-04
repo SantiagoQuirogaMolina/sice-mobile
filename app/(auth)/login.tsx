@@ -39,7 +39,7 @@ export default function LoginScreen() {
 
   useEffect(() => {
     if (isAuthenticated) {
-      router.replace('/(gestor)');
+      router.replace('/dashboard');
     }
   }, [isAuthenticated, router]);
 

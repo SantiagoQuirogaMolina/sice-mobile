@@ -23,13 +23,13 @@ export default function GestorLayout() {
   useEffect(() => {
     if (!hydrated) return;
     if (!isAuthenticated || !user) {
-      router.replace('/(auth)/login');
+      router.replace('/login');
       return;
     }
     if (!FIELD_ROLES.includes(user.role)) {
       // Rol no apto para campo — kick out
       void useAuthStore.getState().logout();
-      router.replace('/(auth)/login');
+      router.replace('/login');
     }
   }, [hydrated, isAuthenticated, user, router]);
 

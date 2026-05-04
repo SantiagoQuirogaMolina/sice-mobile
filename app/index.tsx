@@ -21,9 +21,9 @@ export default function Index() {
   }
 
   if (isAuthenticated) {
-    return <Redirect href="/(gestor)" />;
+    return <Redirect href="/dashboard" />;
   }
-  return <Redirect href="/(auth)/login" />;
+  return <Redirect href="/login" />;
 }
 
 const styles = StyleSheet.create({
