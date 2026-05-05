@@ -33,27 +33,35 @@ import {
  * Espejo del flujo que tenemos en la web. Solo mostramos roles que pueden
  * usar la app móvil (gestor/asistente, ambos "operador de campo" tras Sprint 7).
  *
- * En producción real con un cliente final, esta sección se oculta condicionalmente
- * (ver __DEV__ check abajo). Por ahora la dejamos visible para test.
+ * Sprint 9.7: BD reseteada — 4 operadores (2 por cada tenant: Tunja + Cómbita).
+ * En producción real con un cliente final, esta sección se oculta.
  */
 const DEMO_OPERATORS = [
+  // Tunja
   {
-    email: 'gestor@entidad.com',
+    email: 'gestor1@tunja.gov.co',
     label: 'Andrés Pulido',
-    sub: 'gestor · Tunja',
+    sub: 'Tunja',
     initials: 'AP',
   },
   {
-    email: 'asistente@entidad.com',
+    email: 'gestor2@tunja.gov.co',
     label: 'María Cárdenas',
-    sub: 'gestor · Tunja',
+    sub: 'Tunja',
     initials: 'MC',
   },
+  // Cómbita
   {
-    email: 'maria.gestora@tunja.gov.co',
-    label: 'María Cárdenas (alt)',
-    sub: 'gestor · Tunja',
-    initials: 'MC',
+    email: 'gestor1@combita.gov.co',
+    label: 'Jorge Buitrago',
+    sub: 'Cómbita',
+    initials: 'JB',
+  },
+  {
+    email: 'gestor2@combita.gov.co',
+    label: 'Patricia Vargas',
+    sub: 'Cómbita',
+    initials: 'PV',
   },
 ];
 
