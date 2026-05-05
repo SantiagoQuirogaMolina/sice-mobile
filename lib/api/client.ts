@@ -127,8 +127,11 @@ async function request<T>(
       : e instanceof Error
         ? e.message
         : 'Network error';
+    // Log a console.log (no .error) para no spamear el overlay rojo de Expo Go
+    // cuando el operador está offline — es el caso esperado, no un bug.
+    // Los logs siguen visibles en la terminal de Metro para diagnóstico.
     // eslint-disable-next-line no-console
-    console.error(`[api] FAIL ${url} (${elapsed}ms):`, message);
+    console.log(`[api] FAIL ${url} (${elapsed}ms):`, message);
     throw new ApiError(isAbort ? 'TIMEOUT' : 'NETWORK_ERROR', message, 0);
   }
   clearTimeout(timeout);
