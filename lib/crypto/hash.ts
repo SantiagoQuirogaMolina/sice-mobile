@@ -1,30 +1,73 @@
 /**
  * SHA-256 helpers para evidencia probatoria.
  *
- * Usamos expo-crypto que tiene implementación nativa (no JS puro), rápido
- * incluso para fotos grandes.
+ * IMPORTANTE: el backend hashea los BYTES decodificados del base64 (no la
+ * string base64 literal). El cliente debe hacer lo mismo o el backend
+ * rechaza con SHA256_MISMATCH.
+ *
+ *   backend: Buffer.from(base64, 'base64') → SHA-256(buffer)
+ *   mobile:  decodificar base64 → Uint8Array → SHA-256(uint8array)
  */
 
 import * as Crypto from 'expo-crypto';
 
 /**
- * Calcula SHA-256 hex de un Data URL (data:image/png;base64,...).
- * Hashea el cuerpo base64, NO el prefijo MIME.
+ * Decodifica una string base64 a Uint8Array.
+ * RN no tiene Buffer global por defecto, así que usamos atob (disponible
+ * desde RN 0.74+) más conversión charCode → byte.
+ */
+function base64ToBytes(base64: string): Uint8Array {
+  // RN tiene atob global en SDK 54. Si por alguna razón no, hay polyfill
+  // en el bundle de Expo.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const decoder = (globalThis as any).atob as (s: string) => string;
+  if (!decoder) {
+    throw new Error('atob no disponible en este runtime');
+  }
+  const binary = decoder(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes;
+}
+
+/** Convierte un ArrayBuffer/Uint8Array de hash a hex string. */
+function bufferToHex(buf: ArrayBuffer): string {
+  const view = new Uint8Array(buf);
+  let out = '';
+  for (let i = 0; i < view.length; i++) {
+    out += view[i].toString(16).padStart(2, '0');
+  }
+  return out;
+}
+
+/**
+ * SHA-256 hex de los bytes BINARIOS de un Data URL.
+ * Decodifica el base64 antes de hashear — match exacto con
+ * Buffer.from(base64).digest('sha256') del backend.
  */
 export async function sha256OfDataUrl(dataUrl: string): Promise<string> {
   const idx = dataUrl.indexOf(',');
   const base64 = idx >= 0 ? dataUrl.substring(idx + 1) : dataUrl;
-  return Crypto.digestStringAsync(
-    Crypto.CryptoDigestAlgorithm.SHA256,
-    base64,
-    { encoding: Crypto.CryptoEncoding.HEX },
-  );
+  const bytes = base64ToBytes(base64);
+  // expo-crypto.digest acepta ArrayBuffer / Uint8Array.
+  // Forzamos al ArrayBuffer concreto para evitar warning de SharedArrayBuffer.
+  const ab = bytes.buffer.slice(
+    bytes.byteOffset,
+    bytes.byteOffset + bytes.byteLength,
+  ) as ArrayBuffer;
+  const hash = await Crypto.digest(Crypto.CryptoDigestAlgorithm.SHA256, ab);
+  return bufferToHex(hash);
 }
 
 /**
- * Hash compuesto del delivery (citizen + event + capturedAt + sigHash + photoHash).
- * Replica la lógica del backend para que el cliente pueda mostrar el ID
- * en pantalla de éxito sin esperar al sync.
+ * Hash compuesto del delivery — mismo formato que el backend en
+ * deliveries.service.ts composeHash:
+ *   sha256( citizenId | eventId | capturedAt | signatureSha256 | photoSha256 )
+ *
+ * El backend lo recalcula y rechaza si no coincide. Lo computamos en
+ * cliente para mostrar el ID corto en pantalla de éxito sin esperar al sync.
  */
 export async function sha256OfDelivery(input: {
   citizenId: string;
@@ -33,7 +76,13 @@ export async function sha256OfDelivery(input: {
   signatureSha256: string;
   photoSha256: string;
 }): Promise<string> {
-  const payload = `${input.citizenId}|${input.eventId}|${input.capturedAt}|${input.signatureSha256}|${input.photoSha256}`;
+  const payload = [
+    input.citizenId,
+    input.eventId,
+    input.capturedAt,
+    input.signatureSha256,
+    input.photoSha256,
+  ].join('|');
   return Crypto.digestStringAsync(
     Crypto.CryptoDigestAlgorithm.SHA256,
     payload,

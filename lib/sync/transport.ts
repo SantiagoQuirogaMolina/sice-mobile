@@ -12,6 +12,7 @@
  */
 
 import { api, ApiError } from '../api/client';
+import { sha256OfDataUrl } from '../crypto/hash';
 import type { PendingDelivery } from '../offline/db';
 
 export type SyncResult =
@@ -79,28 +80,38 @@ function classify(err: unknown): SyncResult {
 export async function uploadDelivery(d: PendingDelivery): Promise<SyncResult> {
   try {
     // 1) Subir firma (si data URL — si ya es http URL, no re-sube)
-    if (!d.signatureDataUrl || !d.signatureSha256) {
+    if (!d.signatureDataUrl) {
       return {
         kind: 'error',
-        message: 'Firma incompleta (faltó dataUrl o sha256)',
+        message: 'Firma incompleta (faltó dataUrl)',
         retryable: false,
       };
     }
+    // Sprint 9.3.1: recomputamos siempre el SHA-256 a partir del dataUrl antes
+    // de subir. Esto auto-cura deliveries de versiones previas donde el hash
+    // se calculaba sobre la string base64 (no los bytes binarios). Costo:
+    // ~30ms por hash en mobile, despreciable.
+    const sigHash = d.signatureDataUrl.startsWith('data:')
+      ? await sha256OfDataUrl(d.signatureDataUrl)
+      : d.signatureSha256 ?? '';
     const sig = d.signatureDataUrl.startsWith('data:')
-      ? await uploadEvidence('signature', d.signatureDataUrl, d.signatureSha256)
-      : { url: d.signatureDataUrl, sha256: d.signatureSha256 };
+      ? await uploadEvidence('signature', d.signatureDataUrl, sigHash)
+      : { url: d.signatureDataUrl, sha256: sigHash };
 
     // 2) Subir foto
-    if (!d.photoDataUrl || !d.photoSha256) {
+    if (!d.photoDataUrl) {
       return {
         kind: 'error',
         message: 'Foto incompleta',
         retryable: false,
       };
     }
+    const photoHash = d.photoDataUrl.startsWith('data:')
+      ? await sha256OfDataUrl(d.photoDataUrl)
+      : d.photoSha256 ?? '';
     const photo = d.photoDataUrl.startsWith('data:')
-      ? await uploadEvidence('photo', d.photoDataUrl, d.photoSha256)
-      : { url: d.photoDataUrl, sha256: d.photoSha256 };
+      ? await uploadEvidence('photo', d.photoDataUrl, photoHash)
+      : { url: d.photoDataUrl, sha256: photoHash };
 
     // 3) Crear el Delivery
     const res = await api.post<BackendDeliveryResponse>(
