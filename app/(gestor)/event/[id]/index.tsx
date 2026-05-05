@@ -1,18 +1,26 @@
 /**
- * Detalle del evento — placeholder Sprint 9.0.
+ * Detalle del evento — Sprint 9.1.
  *
- * Sprint siguiente construirá:
- *   - KPIs reales del operador (entregadas hoy, pendientes, sin sync)
- *   - Lista de beneficiarios con búsqueda offline (SQLite)
- *   - CTA "Capturar entrega" → wizard
- *   - CTA "Registrar excepción" (si Tipo A allowExceptions)
- *   - Banner offline si no hay red
+ * KPIs reales del operador (entregadas, pendientes, sin sync) calculados
+ * desde el SQLite local. Trae beneficiarios del backend en background al
+ * abrir y los persiste para offline.
+ *
+ * CTAs:
+ *   - Capturar entrega → /event/[id]/search (próximo: wizard)
+ *   - Ver lista        → /event/[id]/beneficiaries
+ *
+ * Sprint 9.2 agregará:
+ *   - Banner de estado offline
+ *   - Detalle de excepciones permitidas / no permitidas
+ *   - Reglas de captura visibles
  */
 
 import { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   Pressable,
+  RefreshControl,
+  ScrollView,
   StyleSheet,
   Text,
   View,
@@ -24,6 +32,8 @@ import {
   eventsService,
   type EventSummary,
 } from '../../../../lib/api/services/events.service';
+import { beneficiariesService } from '../../../../lib/api/services/beneficiaries.service';
+import { getEventCounts, type EventCounts } from '../../../../lib/offline/db';
 import {
   colors,
   fontSizes,
@@ -36,14 +46,52 @@ export default function EventDetail() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
   const [event, setEvent] = useState<EventSummary | null>(null);
+  const [counts, setCounts] = useState<EventCounts>({
+    total: 0,
+    delivered: 0,
+    pending: 0,
+    hasLocalDelivery: 0,
+    pendingSync: 0,
+  });
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [bannerError, setBannerError] = useState<string | null>(null);
+
+  const refreshLocalCounts = () => {
+    if (!id) return;
+    setCounts(getEventCounts(id));
+  };
+
+  const load = async () => {
+    if (!id) return;
+    try {
+      // 1. Detalle del evento (offline-first)
+      const ev = await eventsService.getById(id);
+      setEvent(ev);
+
+      // 2. Beneficiarios al cache (background)
+      try {
+        await beneficiariesService.listForEvent(id);
+        setBannerError(null);
+      } catch (e) {
+        setBannerError(
+          e instanceof Error
+            ? `Beneficiarios: ${e.message}`
+            : 'No se pudo refrescar la lista',
+        );
+      }
+
+      // 3. Re-leer counts del SQLite
+      refreshLocalCounts();
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
+  };
 
   useEffect(() => {
-    if (!id) return;
-    void eventsService.getById(id).then((e) => {
-      setEvent(e);
-      setLoading(false);
-    });
+    void load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
   if (loading) {
@@ -69,61 +117,193 @@ export default function EventDetail() {
     );
   }
 
+  const isDraft = event.status === 'draft';
+  const progressPct =
+    counts.total > 0
+      ? Math.round((counts.delivered / counts.total) * 100)
+      : 0;
+
   return (
-    <Screen>
-      <Pressable
-        onPress={() => router.back()}
-        style={({ pressed }) => [styles.back, pressed && { opacity: 0.7 }]}
+    <Screen padding="none">
+      <ScrollView
+        contentContainerStyle={styles.scroll}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={() => {
+              setRefreshing(true);
+              void load();
+            }}
+            tintColor={colors.cyan}
+            colors={[colors.cyan]}
+          />
+        }
       >
-        <Text style={styles.backText}>← Mis eventos</Text>
-      </Pressable>
+        <Pressable
+          onPress={() => router.back()}
+          style={({ pressed }) => [styles.back, pressed && { opacity: 0.7 }]}
+        >
+          <Text style={styles.backText}>← Mis eventos</Text>
+        </Pressable>
 
-      <Text style={styles.title}>{event.name}</Text>
-      <Text style={styles.subtitle}>
-        {event.municipio} ·{' '}
-        {event.type === 'A' ? 'Tipo A · lista' : 'Tipo B · auto-registro'}
-      </Text>
-
-      <View style={styles.card}>
-        <Text style={styles.cardTitle}>Sprint 9.0 — Scaffold</Text>
-        <Text style={styles.cardBody}>
-          La estructura base ya está conectada al backend. En el siguiente
-          sprint agregamos:
+        <Text style={styles.title}>{event.name}</Text>
+        <Text style={styles.subtitle}>
+          {event.municipio} ·{' '}
+          {event.type === 'A' ? 'Tipo A · lista' : 'Tipo B · auto-registro'}
         </Text>
-        <View style={styles.bullet}>
-          <Text style={styles.bulletText}>• Lista de beneficiarios (SQLite offline)</Text>
-        </View>
-        <View style={styles.bullet}>
-          <Text style={styles.bulletText}>• Wizard de captura (firma + foto + GPS)</Text>
-        </View>
-        <View style={styles.bullet}>
-          <Text style={styles.bulletText}>• Sync queue confiable</Text>
-        </View>
-        <View style={styles.bullet}>
-          <Text style={styles.bulletText}>• Excepciones offline</Text>
-        </View>
-      </View>
 
-      <View style={styles.statsRow}>
-        <View style={styles.statCard}>
-          <Text style={styles.statLabel}>Total</Text>
-          <Text style={styles.statValue}>{event.totalBeneficiaries}</Text>
+        {/* Banner draft — bloqueo preventivo */}
+        {isDraft && (
+          <View style={styles.warningBanner}>
+            <Text style={styles.warningTitle}>Evento en borrador</Text>
+            <Text style={styles.warningBody}>
+              No puedes capturar todavía. Pide al coordinador que active el
+              evento desde su panel.
+            </Text>
+          </View>
+        )}
+
+        {/* Banner refresh fallido */}
+        {bannerError && (
+          <View style={styles.softBanner}>
+            <Text style={styles.softBannerText}>{bannerError}</Text>
+          </View>
+        )}
+
+        {/* Hero — progreso del día */}
+        <View style={styles.hero}>
+          <Text style={styles.heroLabel}>Progreso de mi lista</Text>
+          <View style={styles.heroRow}>
+            <Text style={styles.heroNumber}>{counts.delivered}</Text>
+            <Text style={styles.heroDenom}>/ {counts.total}</Text>
+            <View style={{ flex: 1 }} />
+            <View style={styles.pct}>
+              <Text style={styles.pctText}>{progressPct}%</Text>
+            </View>
+          </View>
+          <View style={styles.progressBg}>
+            <View
+              style={[
+                styles.progressFill,
+                { width: `${progressPct}%` as `${number}%` },
+              ]}
+            />
+          </View>
         </View>
-        <View style={styles.statCard}>
-          <Text style={styles.statLabel}>Entregadas</Text>
-          <Text style={[styles.statValue, { color: colors.success }]}>
-            {event.totalDelivered}
-          </Text>
+
+        {/* KPIs grid 2x2 */}
+        <View style={styles.kpiGrid}>
+          <KpiCard
+            label="Pendientes"
+            value={counts.pending}
+            tone={counts.pending > 0 ? 'warning' : 'muted'}
+          />
+          <KpiCard
+            label="Entregadas hoy"
+            value={counts.delivered}
+            tone="success"
+          />
+          <KpiCard
+            label="Sin sincronizar"
+            value={counts.pendingSync}
+            tone={counts.pendingSync > 0 ? 'warning' : 'muted'}
+          />
+          <KpiCard
+            label="Capturas locales"
+            value={counts.hasLocalDelivery}
+            tone="info"
+          />
         </View>
-        <View style={styles.statCard}>
-          <Text style={styles.statLabel}>Estado</Text>
-          <Text style={[styles.statValue, { fontSize: fontSizes.md }]}>
-            {event.status}
-          </Text>
+
+        {/* CTAs */}
+        <View style={styles.ctaRow}>
+          {isDraft ? (
+            <View style={styles.ctaBlocked}>
+              <Text style={styles.ctaBlockedText}>Captura bloqueada (borrador)</Text>
+            </View>
+          ) : (
+            <Button
+              label="Capturar entrega"
+              variant="primary"
+              onPress={() => {
+                // Sprint 9.2: este botón abrirá la pantalla de búsqueda → wizard
+                router.push(`/event/${event.id}/beneficiaries` as never);
+              }}
+            />
+          )}
+          <View style={{ height: spacing.sm }} />
+          <Button
+            label="Ver lista de beneficiarios"
+            variant="secondary"
+            onPress={() => {
+              router.push(`/event/${event.id}/beneficiaries` as never);
+            }}
+          />
         </View>
-      </View>
+
+        {/* Info evento */}
+        <View style={styles.infoCard}>
+          <Text style={styles.infoTitle}>Información del evento</Text>
+          <InfoRow label="Estado" value={statusLabel(event.status)} />
+          <InfoRow label="Tipo" value={event.type === 'A' ? 'Lista pre-cargada' : 'Auto-registro'} />
+          <InfoRow
+            label="Excepciones"
+            value={event.allowExceptions ? 'Permitidas' : 'No permitidas'}
+          />
+          <InfoRow label="Departamento" value={event.departamento || '—'} />
+          <InfoRow label="Municipio" value={event.municipio || '—'} />
+        </View>
+      </ScrollView>
     </Screen>
   );
+}
+
+function KpiCard({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: number;
+  tone: 'success' | 'warning' | 'info' | 'muted';
+}) {
+  const valueColor = {
+    success: colors.success,
+    warning: colors.warning,
+    info: colors.cyan,
+    muted: colors.textPrimary,
+  }[tone];
+
+  return (
+    <View style={styles.kpiCard}>
+      <Text style={styles.kpiLabel}>{label}</Text>
+      <Text style={[styles.kpiValue, { color: valueColor }]}>{value}</Text>
+    </View>
+  );
+}
+
+function InfoRow({ label, value }: { label: string; value: string }) {
+  return (
+    <View style={styles.infoRow}>
+      <Text style={styles.infoRowLabel}>{label}</Text>
+      <Text style={styles.infoRowValue}>{value}</Text>
+    </View>
+  );
+}
+
+function statusLabel(s: EventSummary['status']): string {
+  switch (s) {
+    case 'active':
+      return 'Activo';
+    case 'paused':
+      return 'Pausado';
+    case 'draft':
+      return 'Borrador';
+    case 'completed':
+      return 'Completado';
+    case 'archived':
+      return 'Archivado';
+  }
 }
 
 const styles = StyleSheet.create({
@@ -131,6 +311,11 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
+    padding: spacing.lg,
+  },
+  scroll: {
+    padding: spacing.lg,
+    paddingBottom: spacing.xxl,
   },
   back: {
     paddingVertical: spacing.sm,
@@ -150,61 +335,166 @@ const styles = StyleSheet.create({
     color: colors.textSecondary,
     fontSize: fontSizes.sm,
     marginTop: spacing.xs,
+    marginBottom: spacing.md,
   },
-  card: {
-    marginTop: spacing.lg,
+  warningBanner: {
+    backgroundColor: colors.warningBg,
+    borderLeftWidth: 4,
+    borderLeftColor: colors.warning,
+    borderRadius: radii.md,
+    padding: spacing.md,
+    marginVertical: spacing.sm,
+  },
+  warningTitle: {
+    color: colors.warning,
+    fontSize: fontSizes.xs,
+    fontWeight: fontWeights.bold,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  warningBody: {
+    color: colors.textPrimary,
+    fontSize: fontSizes.sm,
+    marginTop: spacing.xs,
+    lineHeight: 20,
+  },
+  softBanner: {
+    backgroundColor: colors.bgInput,
+    borderRadius: radii.sm,
+    padding: spacing.sm,
+    marginBottom: spacing.sm,
+  },
+  softBannerText: {
+    color: colors.textMuted,
+    fontSize: fontSizes.xs,
+  },
+  hero: {
     backgroundColor: colors.bgCard,
     borderRadius: radii.lg,
     padding: spacing.lg,
     borderWidth: 1,
     borderColor: colors.cyan,
+    marginTop: spacing.md,
   },
-  cardTitle: {
+  heroLabel: {
     color: colors.cyan,
     fontSize: fontSizes.xs,
     fontWeight: fontWeights.bold,
     textTransform: 'uppercase',
     letterSpacing: 0.5,
   },
-  cardBody: {
-    color: colors.textSecondary,
-    fontSize: fontSizes.sm,
-    marginTop: spacing.sm,
-    lineHeight: 20,
-  },
-  bullet: {
-    marginTop: spacing.sm,
-  },
-  bulletText: {
-    color: colors.textPrimary,
-    fontSize: fontSizes.sm,
-  },
-  statsRow: {
+  heroRow: {
     flexDirection: 'row',
-    gap: spacing.md,
-    marginTop: spacing.lg,
+    alignItems: 'baseline',
+    marginTop: spacing.sm,
+    gap: spacing.xs,
   },
-  statCard: {
-    flex: 1,
+  heroNumber: {
+    color: colors.textPrimary,
+    fontSize: 36,
+    fontWeight: fontWeights.extrabold,
+    fontVariant: ['tabular-nums'],
+  },
+  heroDenom: {
+    color: colors.textSecondary,
+    fontSize: fontSizes.lg,
+    fontWeight: fontWeights.semibold,
+  },
+  pct: {
+    backgroundColor: colors.cyanSoft,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.xs,
+    borderRadius: radii.full,
+  },
+  pctText: {
+    color: colors.cyan,
+    fontSize: fontSizes.xs,
+    fontWeight: fontWeights.bold,
+  },
+  progressBg: {
+    height: 6,
+    backgroundColor: colors.bgInput,
+    borderRadius: radii.full,
+    overflow: 'hidden',
+    marginTop: spacing.md,
+  },
+  progressFill: {
+    height: '100%',
+    backgroundColor: colors.cyan,
+    borderRadius: radii.full,
+  },
+  kpiGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.sm,
+    marginTop: spacing.md,
+  },
+  kpiCard: {
+    flexBasis: '48%',
     backgroundColor: colors.bgCard,
     borderRadius: radii.md,
     padding: spacing.md,
     borderWidth: 1,
     borderColor: colors.border,
   },
-  statLabel: {
+  kpiLabel: {
     color: colors.textMuted,
     fontSize: 10,
     fontWeight: fontWeights.medium,
     textTransform: 'uppercase',
     letterSpacing: 0.5,
   },
-  statValue: {
-    color: colors.textPrimary,
-    fontSize: fontSizes.xl,
-    fontWeight: fontWeights.bold,
+  kpiValue: {
+    fontSize: fontSizes.xxl,
+    fontWeight: fontWeights.extrabold,
     marginTop: spacing.xs,
     fontVariant: ['tabular-nums'],
+  },
+  ctaRow: {
+    marginTop: spacing.lg,
+  },
+  ctaBlocked: {
+    backgroundColor: colors.bgInput,
+    borderRadius: radii.full,
+    padding: spacing.md,
+    alignItems: 'center',
+  },
+  ctaBlockedText: {
+    color: colors.textMuted,
+    fontSize: fontSizes.sm,
+    fontWeight: fontWeights.semibold,
+  },
+  infoCard: {
+    marginTop: spacing.lg,
+    backgroundColor: colors.bgCard,
+    borderRadius: radii.lg,
+    padding: spacing.lg,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  infoTitle: {
+    color: colors.textMuted,
+    fontSize: fontSizes.xs,
+    fontWeight: fontWeights.bold,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+    marginBottom: spacing.md,
+  },
+  infoRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingVertical: spacing.sm,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+  },
+  infoRowLabel: {
+    color: colors.textMuted,
+    fontSize: fontSizes.sm,
+  },
+  infoRowValue: {
+    color: colors.textPrimary,
+    fontSize: fontSizes.sm,
+    fontWeight: fontWeights.semibold,
   },
   errorText: {
     color: colors.error,

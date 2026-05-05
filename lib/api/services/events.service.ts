@@ -6,7 +6,12 @@
  * backend ya respeta el rol del JWT.
  */
 
-import { api } from '../client';
+import { api, ApiError } from '../client';
+import {
+  saveCachedEvent,
+  getCachedEvent,
+  type CachedEvent,
+} from '../../offline/db';
 
 export interface EventSummary {
   id: string;
@@ -61,6 +66,24 @@ function mapEvent(b: BackendEvent): EventSummary {
   };
 }
 
+export interface SectorInfo {
+  id: string;
+  name: string;
+  zona: 'urbana' | 'rural';
+  beneficiaryCount: number;
+  gestorIds: string[];
+}
+
+interface BackendSector {
+  id: string;
+  eventId: string;
+  name: string;
+  zona: 'urbana' | 'rural';
+  beneficiaryCount: number;
+  gestorIds?: string[];
+  gestorId?: string | null;
+}
+
 export const eventsService = {
   /**
    * Lista los eventos donde el operador (gestor/asistente) está asignado.
@@ -71,12 +94,78 @@ export const eventsService = {
     return items.map(mapEvent);
   },
 
+  /**
+   * Sprint 9.1: getById offline-first.
+   *   - Try network. Si OK, persiste al cache local y devuelve.
+   *   - Si network falla, lee del cache.
+   */
   async getById(id: string): Promise<EventSummary | null> {
     try {
       const data = await api.get<BackendEvent>(`/api/v1/events/${id}`);
-      return mapEvent(data);
-    } catch {
+      const summary = mapEvent(data);
+      // Persistir al cache local para que offline funcione
+      saveCachedEvent(toCached(summary, null));
+      return summary;
+    } catch (err) {
+      // Si no hay red, fallback al cache
+      if (err instanceof ApiError && err.code === 'NETWORK_ERROR') {
+        const cached = getCachedEvent(id);
+        return cached ? fromCached(cached) : null;
+      }
       return null;
     }
   },
+
+  async listSectors(eventId: string): Promise<SectorInfo[]> {
+    const items = await api.get<BackendSector[]>(
+      `/api/v1/events/${eventId}/sectors`,
+    );
+    return items.map((s) => ({
+      id: s.id,
+      name: s.name,
+      zona: s.zona,
+      beneficiaryCount: s.beneficiaryCount ?? 0,
+      gestorIds: s.gestorIds ?? (s.gestorId ? [s.gestorId] : []),
+    }));
+  },
 };
+
+function toCached(s: EventSummary, sectorsJson: string | null): CachedEvent {
+  return {
+    id: s.id,
+    tenantId: s.tenantId,
+    name: s.name,
+    type: s.type,
+    status: s.status,
+    description: s.description,
+    startDate: s.startDate,
+    endDate: s.endDate,
+    departamento: s.departamento,
+    municipio: s.municipio,
+    allowExceptions: s.allowExceptions,
+    allowQrSelfRegister: s.allowQrSelfRegister,
+    totalBeneficiaries: s.totalBeneficiaries,
+    totalDelivered: s.totalDelivered,
+    sectorsJson,
+    lastSyncAt: new Date().toISOString(),
+  };
+}
+
+function fromCached(c: CachedEvent): EventSummary {
+  return {
+    id: c.id,
+    tenantId: c.tenantId,
+    name: c.name,
+    type: c.type,
+    status: c.status,
+    description: c.description,
+    startDate: c.startDate,
+    endDate: c.endDate,
+    departamento: c.departamento ?? '',
+    municipio: c.municipio ?? '',
+    allowExceptions: c.allowExceptions,
+    allowQrSelfRegister: c.allowQrSelfRegister,
+    totalBeneficiaries: c.totalBeneficiaries,
+    totalDelivered: c.totalDelivered,
+  };
+}
