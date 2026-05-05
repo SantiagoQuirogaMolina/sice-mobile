@@ -29,41 +29,22 @@ import {
 } from '../../lib/theme/tokens';
 
 /**
- * DEMO_OPERATORS — auto-fill rápido para los operadores seeded en el backend.
- * Espejo del flujo que tenemos en la web. Solo mostramos roles que pueden
- * usar la app móvil (gestor/asistente, ambos "operador de campo" tras Sprint 7).
+ * DEMO_OPERATORS — auto-fill para operadores de campo seeded.
  *
- * Sprint 9.7: BD reseteada — 4 operadores (2 por cada tenant: Tunja + Cómbita).
- * En producción real con un cliente final, esta sección se oculta.
+ * Sprint 9.7 paso 2 (factory-reset): la BD quedó sin operadores
+ * pre-cargados. Los gestores se crean desde la web (super_admin →
+ * coordinator → digitador o coordinator → gestor). Cuando el operador
+ * en campo recibe sus credenciales del coordinador, las ingresa
+ * manualmente la primera vez. No hay chips para evitar confusión.
+ *
+ * Si hay datos seeded en testing futuro, esta lista se vuelve a llenar.
  */
-const DEMO_OPERATORS = [
-  // Tunja
-  {
-    email: 'gestor1@tunja.gov.co',
-    label: 'Andrés Pulido',
-    sub: 'Tunja',
-    initials: 'AP',
-  },
-  {
-    email: 'gestor2@tunja.gov.co',
-    label: 'María Cárdenas',
-    sub: 'Tunja',
-    initials: 'MC',
-  },
-  // Cómbita
-  {
-    email: 'gestor1@combita.gov.co',
-    label: 'Jorge Buitrago',
-    sub: 'Cómbita',
-    initials: 'JB',
-  },
-  {
-    email: 'gestor2@combita.gov.co',
-    label: 'Patricia Vargas',
-    sub: 'Cómbita',
-    initials: 'PV',
-  },
-];
+const DEMO_OPERATORS: Array<{
+  email: string;
+  label: string;
+  sub: string;
+  initials: string;
+}> = [];
 
 const DEMO_PASSWORD = 'demo123';
 
