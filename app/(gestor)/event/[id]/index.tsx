@@ -15,7 +15,7 @@
  *   - Reglas de captura visibles
  */
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   Pressable,
@@ -25,7 +25,7 @@ import {
   Text,
   View,
 } from 'react-native';
-import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { Screen } from '../../../../components/Screen';
 import { Button } from '../../../../components/Button';
 import {
@@ -93,6 +93,16 @@ export default function EventDetail() {
     void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
+
+  // Al volver del wizard / beneficiarios / sync, refrescamos los counters
+  // del SQLite. No hace falta volver a llamar al backend (lento) — el
+  // local-first ya tiene los datos correctos.
+  useFocusEffect(
+    useCallback(() => {
+      refreshLocalCounts();
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [id]),
+  );
 
   if (loading) {
     return (

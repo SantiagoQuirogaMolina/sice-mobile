@@ -333,8 +333,23 @@ export default function DeliveryWizardScreen() {
             beneficiary={beneficiary}
             offlineId={draft.offlineId}
             composedHash={composedHash}
-            onBackToList={() => router.replace(`/event/${eventId}/beneficiaries` as never)}
-            onCaptureNext={() => router.replace(`/event/${eventId}/beneficiaries` as never)}
+            onBackToList={() => {
+              // Pop el wizard del stack en vez de hacer replace.
+              // replace dejaba un /beneficiaries duplicado por cada captura;
+              // tras 10 entregas el operador tenía que tocar "back" 10 veces.
+              if (router.canGoBack()) {
+                router.back();
+              } else {
+                router.replace(`/event/${eventId}/beneficiaries` as never);
+              }
+            }}
+            onCaptureNext={() => {
+              if (router.canGoBack()) {
+                router.back();
+              } else {
+                router.replace(`/event/${eventId}/beneficiaries` as never);
+              }
+            }}
           />
         )}
       </KeyboardAvoidingView>

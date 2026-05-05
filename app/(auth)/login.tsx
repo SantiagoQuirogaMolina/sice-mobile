@@ -71,7 +71,9 @@ export default function LoginScreen() {
 
   useEffect(() => {
     if (isAuthenticated) {
-      router.replace('/dashboard');
+      // expo-router types se regeneran cuando arranca Metro. Hasta que corra,
+      // /inicio (tab nuevo de Sprint 9.6) no está en el tipo. Cast as never.
+      router.replace('/inicio' as never);
     }
   }, [isAuthenticated, router]);
 

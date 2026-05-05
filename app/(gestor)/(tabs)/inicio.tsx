@@ -1,11 +1,9 @@
 /**
- * Dashboard del operador — lista de eventos asignados.
+ * Inicio — lista de eventos asignados al operador.
  *
- * Sprint 9.0: solo lista los eventos del backend. Próximos sprints agregan:
- *   - Detalle del evento con KPIs y lista de beneficiarios
- *   - Wizard de captura (firma + foto + GPS)
- *   - Sync queue offline (SQLite)
- *   - Excepciones offline
+ * Tab principal del operador. Antes era /dashboard; con el TabBar
+ * (Sprint 9.6) pasó a ser /inicio. El logout y el perfil migraron a la
+ * tab "Yo" para no congestionar el header.
  */
 
 import { useEffect, useState } from 'react';
@@ -19,25 +17,24 @@ import {
   View,
 } from 'react-native';
 import { useRouter } from 'expo-router';
-import { Screen } from '../../components/Screen';
-import { Button } from '../../components/Button';
-import { useAuthStore } from '../../lib/stores/auth-store';
+import { Screen } from '../../../components/Screen';
+import { Button } from '../../../components/Button';
+import { useAuthStore } from '../../../lib/stores/auth-store';
 import {
   eventsService,
   type EventSummary,
-} from '../../lib/api/services/events.service';
+} from '../../../lib/api/services/events.service';
 import {
   colors,
   fontSizes,
   fontWeights,
   radii,
   spacing,
-} from '../../lib/theme/tokens';
+} from '../../../lib/theme/tokens';
 
-export default function GestorIndex() {
+export default function InicioTab() {
   const router = useRouter();
   const user = useAuthStore((s) => s.user);
-  const logout = useAuthStore((s) => s.logout);
 
   const [events, setEvents] = useState<EventSummary[]>([]);
   const [loading, setLoading] = useState(true);
@@ -48,9 +45,9 @@ export default function GestorIndex() {
     setError(null);
     try {
       const items = await eventsService.listForMe();
-      // Filtrar solo activos / pausados (los que el operador puede trabajar)
       const usable = items.filter(
-        (e) => e.status === 'active' || e.status === 'paused' || e.status === 'draft',
+        (e) =>
+          e.status === 'active' || e.status === 'paused' || e.status === 'draft',
       );
       setEvents(usable);
     } catch (e) {
@@ -87,22 +84,13 @@ export default function GestorIndex() {
 
   return (
     <Screen padding="none">
-      {/* Header */}
+      {/* Header sin botón de salir — el logout vive en la tab "Yo" */}
       <View style={styles.header}>
         <View style={{ flex: 1 }}>
           <Text style={styles.greeting}>Hola,</Text>
           <Text style={styles.name}>{user?.fullName ?? 'Operador'}</Text>
           <Text style={styles.tenant}>{user?.tenant?.name ?? ''}</Text>
         </View>
-        <Pressable
-          onPress={() => void logout()}
-          style={({ pressed }) => [
-            styles.logoutBtn,
-            pressed && { opacity: 0.7 },
-          ]}
-        >
-          <Text style={styles.logoutText}>Salir</Text>
-        </Pressable>
       </View>
 
       {error && (
@@ -148,8 +136,7 @@ export default function GestorIndex() {
         renderItem={({ item }) => (
           <Pressable
             onPress={() => {
-              // Sprint 9.1: aún no construimos el detalle. Por ahora solo log.
-              router.push(`/(gestor)/event/${item.id}` as never);
+              router.push(`/event/${item.id}` as never);
             }}
             style={({ pressed }) => [
               styles.eventCard,
@@ -196,7 +183,8 @@ export default function GestorIndex() {
             </View>
 
             <Text style={styles.eventLocation}>
-              {item.municipio} · {item.type === 'A' ? 'Tipo A · lista' : 'Tipo B · auto-registro'}
+              {item.municipio} ·{' '}
+              {item.type === 'A' ? 'Tipo A · lista' : 'Tipo B · auto-registro'}
             </Text>
 
             <View style={styles.eventStats}>
@@ -251,18 +239,6 @@ const styles = StyleSheet.create({
     fontSize: fontSizes.xs,
     fontWeight: fontWeights.semibold,
     marginTop: 2,
-  },
-  logoutBtn: {
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.xs,
-    borderRadius: radii.full,
-    borderWidth: 1,
-    borderColor: colors.border,
-  },
-  logoutText: {
-    color: colors.textSecondary,
-    fontSize: fontSizes.xs,
-    fontWeight: fontWeights.semibold,
   },
   errorBanner: {
     backgroundColor: colors.warningBg,

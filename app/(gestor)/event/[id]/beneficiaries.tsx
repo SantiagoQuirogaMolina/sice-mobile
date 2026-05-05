@@ -8,7 +8,7 @@
  * muestra un alert con los datos.
  */
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   FlatList,
@@ -19,7 +19,7 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { Screen } from '../../../../components/Screen';
 import { beneficiariesService } from '../../../../lib/api/services/beneficiaries.service';
 import {
@@ -76,6 +76,17 @@ export default function BeneficiariesScreen() {
     refreshLocal();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [query]);
+
+  // Refresca el cache local cada vez que la pantalla recupera el foco.
+  // Importante: tras hacer una captura el wizard hace router.back() y
+  // queremos que el beneficiario aparezca como "OK" inmediatamente sin
+  // recargar la app o pulir-to-refresh manual.
+  useFocusEffect(
+    useCallback(() => {
+      refreshLocal();
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [eventId, query, filter]),
+  );
 
   // Filtro por estado de entrega (sobre el resultado de la búsqueda)
   const filtered = useMemo(() => {

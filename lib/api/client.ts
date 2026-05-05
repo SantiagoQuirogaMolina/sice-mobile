@@ -6,6 +6,12 @@
  *
  * El header X-Client: mobile le dice al backend que devuelva los tokens
  * en el body del login (en vez de solo cookies).
+ *
+ * Sprint 9.6: refresh automático. Si una request autenticada devuelve 401,
+ * el cliente intenta /auth/refresh con el refresh token guardado. Si va
+ * bien, reintenta la request original con el nuevo access token. Si el
+ * refresh también falla, los tokens se borran y el caller recibe el 401
+ * (que el auth-store usa para mandar al login).
  */
 
 import * as SecureStore from 'expo-secure-store';
@@ -59,8 +65,13 @@ interface RequestOptions {
   body?: unknown;
   headers?: Record<string, string>;
   skipAuth?: boolean;
-  /** Timeout en ms. Default 15s. Sin red, fetch falla rápido igual. */
+  /** Timeout en ms. Default 30s. Sin red, fetch falla rápido igual. */
   timeoutMs?: number;
+  /**
+   * Si true, NO se intenta refresh tras 401. Se usa internamente para que
+   * la request a /auth/refresh no se reintente recursivamente.
+   */
+  skipRefreshOn401?: boolean;
 }
 
 async function getAccessToken(): Promise<string | null> {
@@ -80,6 +91,52 @@ export async function clearTokens(): Promise<void> {
 export async function getRefreshToken(): Promise<string | null> {
   return SecureStore.getItemAsync(REFRESH_KEY);
 }
+
+/* ─────────────────────────── Refresh mutex ─────────────────────────── */
+
+/**
+ * Evita N requests concurrentes triggereando N refresh paralelos. Solo
+ * uno corre a la vez; los demás esperan al mismo Promise.
+ */
+let refreshInFlight: Promise<boolean> | null = null;
+
+async function tryRefresh(): Promise<boolean> {
+  if (refreshInFlight) return refreshInFlight;
+
+  refreshInFlight = (async () => {
+    try {
+      const refreshToken = await getRefreshToken();
+      if (!refreshToken) return false;
+
+      // skipRefreshOn401: la propia request a /refresh, si devuelve 401,
+      // no debe disparar otro refresh — sería loop infinito.
+      const res = await request<{
+        ok: boolean;
+        accessToken?: string;
+        refreshToken?: string;
+      }>('/api/v1/auth/refresh', {
+        method: 'POST',
+        body: { refreshToken },
+        skipAuth: true,
+        skipRefreshOn401: true,
+      });
+
+      if (res.accessToken && res.refreshToken) {
+        await setTokens(res.accessToken, res.refreshToken);
+        return true;
+      }
+      return false;
+    } catch {
+      return false;
+    } finally {
+      refreshInFlight = null;
+    }
+  })();
+
+  return refreshInFlight;
+}
+
+/* ─────────────────────────── Request core ─────────────────────────── */
 
 async function request<T>(
   path: string,
@@ -137,6 +194,24 @@ async function request<T>(
   clearTimeout(timeout);
   // eslint-disable-next-line no-console
   console.log(`[api] ${res.status} ${url} (${Date.now() - startedAt}ms)`);
+
+  // Sprint 9.6: 401 → intentar refresh + reintentar UNA vez.
+  // - skipAuth → no hay nada que refrescar
+  // - skipRefreshOn401 → el caller pidió no recurrir (típico: /refresh y
+  //   logout, donde un refresh no sirve)
+  if (
+    res.status === 401 &&
+    !opts.skipAuth &&
+    !opts.skipRefreshOn401
+  ) {
+    const refreshed = await tryRefresh();
+    if (refreshed) {
+      // Reintentamos la request original con los nuevos tokens.
+      return request<T>(path, { ...opts, skipRefreshOn401: true });
+    }
+    // Refresh falló → tokens inválidos. Limpiamos para forzar login.
+    await clearTokens();
+  }
 
   if (!res.ok) {
     type ErrorBody = {

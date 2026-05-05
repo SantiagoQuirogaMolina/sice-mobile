@@ -21,7 +21,9 @@ export default function Index() {
   }
 
   if (isAuthenticated) {
-    return <Redirect href="/dashboard" />;
+    // /inicio es el tab principal post-Sprint 9.6. Cast as never porque
+    // el .expo/types/router.d.ts solo se regenera al correr expo start.
+    return <Redirect href={'/inicio' as never} />;
   }
   return <Redirect href="/login" />;
 }
