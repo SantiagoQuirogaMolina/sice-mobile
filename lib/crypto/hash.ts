@@ -33,8 +33,8 @@ function base64ToBytes(base64: string): Uint8Array {
 }
 
 /** Convierte un ArrayBuffer/Uint8Array de hash a hex string. */
-function bufferToHex(buf: ArrayBuffer): string {
-  const view = new Uint8Array(buf);
+function bufferToHex(buf: ArrayBuffer | Uint8Array): string {
+  const view = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
   let out = '';
   for (let i = 0; i < view.length; i++) {
     out += view[i].toString(16).padStart(2, '0');
@@ -51,13 +51,14 @@ export async function sha256OfDataUrl(dataUrl: string): Promise<string> {
   const idx = dataUrl.indexOf(',');
   const base64 = idx >= 0 ? dataUrl.substring(idx + 1) : dataUrl;
   const bytes = base64ToBytes(base64);
-  // expo-crypto.digest acepta ArrayBuffer / Uint8Array.
-  // Forzamos al ArrayBuffer concreto para evitar warning de SharedArrayBuffer.
-  const ab = bytes.buffer.slice(
-    bytes.byteOffset,
-    bytes.byteOffset + bytes.byteLength,
-  ) as ArrayBuffer;
-  const hash = await Crypto.digest(Crypto.CryptoDigestAlgorithm.SHA256, ab);
+  // En Android, expo-crypto.digest exige Uint8Array — pasarle un ArrayBuffer
+  // tira "Cannot convert '[object ArrayBuffer]' to a Kotlin type".
+  // El cast es seguro: Uint8Array<ArrayBuffer> es compatible con la firma
+  // de expo-crypto en runtime.
+  const hash = await Crypto.digest(
+    Crypto.CryptoDigestAlgorithm.SHA256,
+    bytes as unknown as ArrayBuffer,
+  );
   return bufferToHex(hash);
 }
 
