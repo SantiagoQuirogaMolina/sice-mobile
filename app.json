@@ -22,7 +22,19 @@
       "expo-router",
       "expo-secure-store",
       "expo-asset",
-      "expo-font"
+      "expo-font",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "SICE necesita la cámara para tomar foto del documento como evidencia probatoria de la entrega."
+        }
+      ],
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "SICE captura tu ubicación al momento de registrar la entrega como evidencia de campo."
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true
