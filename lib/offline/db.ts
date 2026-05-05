@@ -580,6 +580,118 @@ export function listDeliveriesByEvent(eventId: string): PendingDelivery[] {
   return rows.map(rowToDelivery);
 }
 
+export function listDeliveriesByStatus(status: SyncStatus): PendingDelivery[] {
+  const db = getDB();
+  const rows = db.getAllSync<Record<string, unknown>>(
+    `SELECT * FROM pending_deliveries WHERE sync_status = ? ORDER BY captured_at ASC`,
+    [status],
+  );
+  return rows.map(rowToDelivery);
+}
+
+export function getPendingDelivery(id: string): PendingDelivery | null {
+  const db = getDB();
+  const row = db.getFirstSync<Record<string, unknown>>(
+    `SELECT * FROM pending_deliveries WHERE id = ?`,
+    [id],
+  );
+  return row ? rowToDelivery(row) : null;
+}
+
+export function setDeliverySyncStatus(
+  id: string,
+  status: SyncStatus,
+  patch?: {
+    lastAttemptAt?: string;
+    nextAttemptAt?: string | null;
+    lastError?: string | null;
+    serverId?: string | null;
+    syncedAt?: string | null;
+    incrementRetry?: boolean;
+  },
+): void {
+  const db = getDB();
+  // Construimos SET dinámico para no pisar campos no provistos
+  const fragments: string[] = [`sync_status = ?`];
+  const args: (string | number | null)[] = [status];
+  if (patch?.lastAttemptAt !== undefined) {
+    fragments.push(`last_attempt_at = ?`);
+    args.push(patch.lastAttemptAt);
+  }
+  if (patch?.nextAttemptAt !== undefined) {
+    fragments.push(`next_attempt_at = ?`);
+    args.push(patch.nextAttemptAt);
+  }
+  if (patch?.lastError !== undefined) {
+    fragments.push(`last_error = ?`);
+    args.push(patch.lastError);
+  }
+  if (patch?.serverId !== undefined) {
+    fragments.push(`server_id = ?`);
+    args.push(patch.serverId);
+  }
+  if (patch?.syncedAt !== undefined) {
+    fragments.push(`synced_at = ?`);
+    args.push(patch.syncedAt);
+  }
+  if (patch?.incrementRetry) {
+    fragments.push(`retry_count = retry_count + 1`);
+  }
+  args.push(id);
+  db.runSync(
+    `UPDATE pending_deliveries SET ${fragments.join(', ')} WHERE id = ?`,
+    args,
+  );
+}
+
+export function markDeliverySynced(id: string, serverId: string): void {
+  setDeliverySyncStatus(id, 'synced', {
+    serverId,
+    syncedAt: new Date().toISOString(),
+    lastError: null,
+    nextAttemptAt: null,
+  });
+}
+
+export function markDeliveryError(
+  id: string,
+  message: string,
+  nextAttemptAt: string | null,
+): void {
+  setDeliverySyncStatus(id, 'error', {
+    lastError: message,
+    nextAttemptAt,
+    lastAttemptAt: new Date().toISOString(),
+    incrementRetry: true,
+  });
+}
+
+export function markDeliveryBlocked(id: string, message: string): void {
+  setDeliverySyncStatus(id, 'blocked', {
+    lastError: message,
+    nextAttemptAt: null,
+    lastAttemptAt: new Date().toISOString(),
+    incrementRetry: true,
+  });
+}
+
+export function unblockDelivery(id: string): void {
+  setDeliverySyncStatus(id, 'pending', {
+    lastError: null,
+    nextAttemptAt: null,
+  });
+}
+
+/** Cuántos deliveries tienen status="pending" o "error" listos para reintentar. */
+export function countPendingSync(): number {
+  const db = getDB();
+  const row = db.getFirstSync<{ c: number }>(
+    `SELECT COUNT(*) AS c FROM pending_deliveries
+       WHERE sync_status IN ('pending', 'error')`,
+  );
+  return row?.c ?? 0;
+}
+
 function rowToDelivery(row: Record<string, unknown>): PendingDelivery {
   const customJson = row.custom_form_data as string | null;
   let customFormData: Record<string, unknown> | null = null;

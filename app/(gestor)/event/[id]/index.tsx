@@ -239,6 +239,17 @@ export default function EventDetail() {
               router.push(`/event/${event.id}/beneficiaries` as never);
             }}
           />
+          {counts.pendingSync > 0 && (
+            <View style={{ marginTop: spacing.sm }}>
+              <Button
+                label={`⬆ Sincronizar (${counts.pendingSync} pendientes)`}
+                variant="secondary"
+                onPress={() => {
+                  router.push(`/event/${event.id}/sync` as never);
+                }}
+              />
+            </View>
+          )}
         </View>
 
         {/* Info evento */}
