@@ -16,6 +16,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   FlatList,
   Pressable,
   StyleSheet,
@@ -26,10 +27,13 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Screen } from '../../../../components/Screen';
 import { Button } from '../../../../components/Button';
 import {
+  listBlockedExceptions,
   listDeliveriesByEvent,
   listPendingCitizensByStatus,
   listPendingEbsByStatus,
+  purgePendingException,
   unblockDelivery,
+  type BlockedExceptionInfo,
   type PendingDelivery,
   type SyncStatus,
 } from '../../../../lib/offline/db';
@@ -57,6 +61,7 @@ export default function SyncScreen() {
     ebsError: 0,
     ebsBlocked: 0,
   });
+  const [blockedExc, setBlockedExc] = useState<BlockedExceptionInfo[]>([]);
   const [progress, setProgress] = useState({
     inFlight: false,
     total: 0,
@@ -65,6 +70,10 @@ export default function SyncScreen() {
 
   const refresh = () => {
     if (!eventId) return;
+    // Solo excepciones de este evento (filtramos por eventId).
+    setBlockedExc(
+      listBlockedExceptions().filter((b) => b.eventId === eventId || !b.eventId),
+    );
     const list = listDeliveriesByEvent(eventId).sort((a, b) => {
       // Prioridad visual: error/blocked arriba, después syncing, después pending, después synced
       const order: Record<SyncStatus, number> = {
@@ -124,6 +133,18 @@ export default function SyncScreen() {
   }, [items]);
 
   const totalPending = buckets.pending + buckets.error;
+  const totalExcPending =
+    exceptionTotals.citizensPending +
+    exceptionTotals.citizensError +
+    exceptionTotals.ebsPending +
+    exceptionTotals.ebsError;
+  const totalExcBlocked =
+    exceptionTotals.citizensBlocked + exceptionTotals.ebsBlocked;
+  const allClean =
+    totalPending === 0 &&
+    buckets.blocked === 0 &&
+    totalExcPending === 0 &&
+    totalExcBlocked === 0;
   const pct =
     progress.inFlight && progress.total > 0
       ? Math.round((progress.done / progress.total) * 100)
@@ -160,12 +181,11 @@ export default function SyncScreen() {
         style={[
           styles.hero,
           {
-            borderColor:
-              totalPending === 0 && buckets.blocked === 0
-                ? colors.success
-                : buckets.blocked > 0
-                  ? colors.warning
-                  : colors.cyan,
+            borderColor: allClean
+              ? colors.success
+              : buckets.blocked > 0 || totalExcBlocked > 0
+                ? colors.warning
+                : colors.cyan,
           },
         ]}
       >
@@ -173,20 +193,21 @@ export default function SyncScreen() {
           style={[
             styles.heroLabel,
             {
-              color:
-                totalPending === 0 && buckets.blocked === 0
-                  ? colors.success
-                  : buckets.blocked > 0
-                    ? colors.warning
-                    : colors.cyan,
+              color: allClean
+                ? colors.success
+                : buckets.blocked > 0 || totalExcBlocked > 0
+                  ? colors.warning
+                  : colors.cyan,
             },
           ]}
         >
-          {totalPending === 0 && buckets.blocked === 0
+          {allClean
             ? '✓ Todo sincronizado'
-            : buckets.blocked > 0
-              ? `⚠ ${buckets.blocked} bloqueadas requieren acción`
-              : `⏳ ${totalPending} por enviar`}
+            : buckets.blocked > 0 || totalExcBlocked > 0
+              ? `⚠ ${buckets.blocked + totalExcBlocked} bloqueada${
+                  buckets.blocked + totalExcBlocked === 1 ? '' : 's'
+                } requieren acción`
+              : `⏳ ${totalPending + totalExcPending} por enviar`}
         </Text>
         <View style={styles.heroNumbers}>
           <View style={styles.heroBox}>
@@ -230,22 +251,77 @@ export default function SyncScreen() {
           exceptionTotals.citizensError +
           exceptionTotals.ebsPending +
           exceptionTotals.ebsError;
-        const totalExcBlocked =
+        const totalExcBlockedLocal =
           exceptionTotals.citizensBlocked + exceptionTotals.ebsBlocked;
-        if (totalExc === 0 && totalExcBlocked === 0) return null;
+        if (totalExc === 0 && totalExcBlockedLocal === 0) return null;
         return (
           <View style={styles.excBanner}>
             <Text style={styles.excTitle}>EXCEPCIONES OFFLINE</Text>
             <Text style={styles.excBody}>
               {totalExc > 0 &&
                 `${totalExc} ${totalExc === 1 ? 'paso pendiente' : 'pasos pendientes'} (alta de ciudadano + vínculo al evento) antes de subir las entregas asociadas.`}
-              {totalExc > 0 && totalExcBlocked > 0 && '\n'}
-              {totalExcBlocked > 0 &&
-                `${totalExcBlocked} excepciones bloqueadas — revisa los errores reportados por el backend.`}
+              {totalExc > 0 && totalExcBlockedLocal > 0 && '\n'}
+              {totalExcBlockedLocal > 0 &&
+                `${totalExcBlockedLocal} excepciones bloqueadas — revisa los detalles abajo.`}
             </Text>
           </View>
         );
       })()}
+
+      {/* Sprint 9.6 — Detalle de excepciones bloqueadas con acción de purgar */}
+      {blockedExc.length > 0 && (
+        <View style={styles.blockedExcWrap}>
+          <Text style={styles.blockedExcTitle}>
+            Excepciones bloqueadas ({blockedExc.length})
+          </Text>
+          {blockedExc.map((b) => {
+            const errorMsg = b.ebError ?? b.citizenError ?? 'Sin detalle';
+            const isSectorRequired =
+              errorMsg.includes('SECTOR_REQUIRED_FOR_OPERATOR') ||
+              errorMsg.includes('asociar la excepción a tu sector');
+            return (
+              <View key={b.citizenLocalId} style={styles.blockedRow}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.blockedName}>{b.fullName}</Text>
+                  <Text style={styles.blockedDoc}>
+                    {b.documentType} {b.documentNumber}
+                  </Text>
+                  <Text style={styles.blockedError}>
+                    {isSectorRequired
+                      ? '⚠ Faltó el sector. Borrá esta y créala de nuevo desde "Registrar excepción" (la app ya lo pide).'
+                      : `⚠ ${errorMsg}`}
+                  </Text>
+                </View>
+                <Pressable
+                  onPress={() => {
+                    Alert.alert(
+                      'Descartar excepción',
+                      `Esto borra ${b.fullName} y cualquier captura asociada de la app. No afecta al backend. ¿Continuar?`,
+                      [
+                        { text: 'Cancelar', style: 'cancel' },
+                        {
+                          text: 'Descartar',
+                          style: 'destructive',
+                          onPress: () => {
+                            purgePendingException(b.citizenLocalId);
+                            refresh();
+                          },
+                        },
+                      ],
+                    );
+                  }}
+                  style={({ pressed }) => [
+                    styles.purgeBtn,
+                    pressed && { opacity: 0.7 },
+                  ]}
+                >
+                  <Text style={styles.purgeBtnText}>Descartar</Text>
+                </Pressable>
+              </View>
+            );
+          })}
+        </View>
+      )}
 
       {/* Acciones */}
       <View style={styles.actions}>
@@ -542,5 +618,64 @@ const styles = StyleSheet.create({
     color: colors.textPrimary,
     fontSize: fontSizes.xs,
     lineHeight: 18,
+  },
+  blockedExcWrap: {
+    marginHorizontal: spacing.lg,
+    marginBottom: spacing.md,
+    backgroundColor: colors.bgCard,
+    borderRadius: radii.md,
+    borderWidth: 1,
+    borderColor: colors.warning,
+    paddingVertical: spacing.sm,
+  },
+  blockedExcTitle: {
+    color: colors.warning,
+    fontSize: 10,
+    fontWeight: fontWeights.bold,
+    letterSpacing: 0.5,
+    textTransform: 'uppercase',
+    paddingHorizontal: spacing.md,
+    marginBottom: spacing.xs,
+  },
+  blockedRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    gap: spacing.sm,
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+  },
+  blockedName: {
+    color: colors.textPrimary,
+    fontSize: fontSizes.sm,
+    fontWeight: fontWeights.semibold,
+  },
+  blockedDoc: {
+    color: colors.textMuted,
+    fontSize: fontSizes.xs,
+    fontVariant: ['tabular-nums'],
+    marginTop: 1,
+  },
+  blockedError: {
+    color: colors.warning,
+    fontSize: fontSizes.xs,
+    marginTop: 4,
+    lineHeight: 16,
+  },
+  purgeBtn: {
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.xs,
+    borderRadius: radii.sm,
+    backgroundColor: colors.errorBg,
+    borderWidth: 1,
+    borderColor: colors.error,
+  },
+  purgeBtnText: {
+    color: colors.error,
+    fontSize: 10,
+    fontWeight: fontWeights.bold,
+    letterSpacing: 0.5,
+    textTransform: 'uppercase',
   },
 });

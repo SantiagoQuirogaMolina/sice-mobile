@@ -1190,6 +1190,98 @@ export function registerExceptionOffline(input: {
   return { citizenLocalId, ebLocalId };
 }
 
+/**
+ * Sprint 9.6: descarta una excepción bloqueada/error que el operador no
+ * va a poder resolver desde mobile (típico: backend rechazó por validación
+ * que no podemos enmendar en cliente). Borra:
+ *   - pending_citizen + pending_event_beneficiary
+ *   - cached_beneficiary creado para esa excepción
+ *   - pending_deliveries asociadas a ese citizen local (si las hay)
+ *
+ * No toca el backend. Si el citizen alcanzó a sincronizar, queda allá
+ * como huérfano (sin EB) — el coordinador puede limpiarlo desde web.
+ */
+export function purgePendingException(citizenLocalId: string): void {
+  const db = getDB();
+  db.withTransactionSync(() => {
+    // pending_event_beneficiaries asociado a este citizen local
+    const ebs = db.getAllSync<{ local_id: string; event_id: string }>(
+      `SELECT local_id, event_id FROM pending_event_beneficiaries
+         WHERE citizen_local_id = ?`,
+      [citizenLocalId],
+    );
+    for (const eb of ebs) {
+      db.runSync(
+        `DELETE FROM cached_beneficiaries WHERE id = ?`,
+        [eb.local_id],
+      );
+    }
+    db.runSync(
+      `DELETE FROM pending_event_beneficiaries WHERE citizen_local_id = ?`,
+      [citizenLocalId],
+    );
+    db.runSync(
+      `DELETE FROM pending_deliveries WHERE citizen_id = ?`,
+      [citizenLocalId],
+    );
+    db.runSync(`DELETE FROM pending_citizens WHERE local_id = ?`, [
+      citizenLocalId,
+    ]);
+  });
+}
+
+/**
+ * Lista todos los pending_citizens en estado bloqueado o error junto con
+ * info derivada (lastError de la EB asociada, si aplica). Útil para
+ * mostrar en UI los problemas de excepciones que requieren acción del
+ * operador.
+ */
+export interface BlockedExceptionInfo {
+  citizenLocalId: string;
+  fullName: string;
+  documentType: DocumentType;
+  documentNumber: string;
+  citizenStatus: SyncStatus;
+  citizenError: string | null;
+  ebStatus: SyncStatus | null;
+  ebError: string | null;
+  eventId: string | null;
+}
+
+export function listBlockedExceptions(): BlockedExceptionInfo[] {
+  const db = getDB();
+  const rows = db.getAllSync<Record<string, unknown>>(
+    `SELECT
+        pc.local_id              AS citizen_local_id,
+        pc.first_name            AS first_name,
+        pc.last_name             AS last_name,
+        pc.document_type         AS document_type,
+        pc.document_number       AS document_number,
+        pc.sync_status           AS citizen_status,
+        pc.last_error            AS citizen_error,
+        eb.sync_status           AS eb_status,
+        eb.last_error            AS eb_error,
+        eb.event_id              AS event_id
+      FROM pending_citizens pc
+      LEFT JOIN pending_event_beneficiaries eb
+        ON eb.citizen_local_id = pc.local_id
+      WHERE pc.sync_status IN ('blocked', 'error')
+         OR eb.sync_status IN ('blocked', 'error')
+      ORDER BY pc.created_at DESC`,
+  );
+  return rows.map((row) => ({
+    citizenLocalId: row.citizen_local_id as string,
+    fullName: `${row.first_name as string} ${row.last_name as string}`.trim(),
+    documentType: row.document_type as DocumentType,
+    documentNumber: row.document_number as string,
+    citizenStatus: row.citizen_status as SyncStatus,
+    citizenError: (row.citizen_error as string | null) ?? null,
+    ebStatus: (row.eb_status as SyncStatus | null) ?? null,
+    ebError: (row.eb_error as string | null) ?? null,
+    eventId: (row.event_id as string | null) ?? null,
+  }));
+}
+
 /** ¿Este citizenId es de un PendingCitizen offline (aún no en backend)? */
 export function isLocalCitizen(citizenId: string): boolean {
   const db = getDB();

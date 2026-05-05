@@ -15,8 +15,9 @@
  *   citizen → eb → delivery
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
+  ActivityIndicator,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -32,6 +33,7 @@ import { Input } from '../../../../components/Input';
 import {
   eventsService,
   type EventSummary,
+  type SectorInfo,
 } from '../../../../lib/api/services/events.service';
 import {
   findBeneficiaryByDoc,
@@ -58,7 +60,9 @@ export default function ExceptionForm() {
   const user = useAuthStore((s) => s.user);
 
   const [event, setEvent] = useState<EventSummary | null>(null);
+  const [sectors, setSectors] = useState<SectorInfo[]>([]);
   const [loadingEvent, setLoadingEvent] = useState(true);
+  const [loadSectorsError, setLoadSectorsError] = useState<string | null>(null);
 
   const [documentType, setDocumentType] = useState<DocumentType>('CC');
   const [documentNumber, setDocumentNumber] = useState('');
@@ -66,22 +70,59 @@ export default function ExceptionForm() {
   const [lastName, setLastName] = useState('');
   const [phone, setPhone] = useState('');
   const [justification, setJustification] = useState('');
+  const [sectorId, setSectorId] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Sectores donde el operador está asignado. El backend exige el sectorId
+  // en POST /events/:id/beneficiaries para gestor/asistente — sin él tira
+  // 400 SECTOR_REQUIRED_FOR_OPERATOR y la excepción queda blocked.
+  const myAssignedSectors = useMemo(() => {
+    if (!user?.id) return [];
+    return sectors.filter((s) => s.gestorIds.includes(user.id));
+  }, [sectors, user?.id]);
 
   useEffect(() => {
     if (!id) return;
     void (async () => {
       try {
-        const ev = await eventsService.getById(id);
-        setEvent(ev);
+        const [ev, sects] = await Promise.allSettled([
+          eventsService.getById(id),
+          eventsService.listSectors(id),
+        ]);
+        if (ev.status === 'fulfilled') setEvent(ev.value);
+        if (sects.status === 'fulfilled') {
+          setSectors(sects.value);
+        } else {
+          setLoadSectorsError(
+            sects.reason instanceof Error
+              ? sects.reason.message
+              : 'No se pudo cargar la lista de sectores',
+          );
+        }
       } finally {
         setLoadingEvent(false);
       }
     })();
   }, [id]);
 
-  if (loadingEvent) return null;
+  // Pre-seleccionar el sector si el operador solo tiene UNO asignado.
+  // Si tiene varios → debe elegir manualmente.
+  useEffect(() => {
+    if (myAssignedSectors.length === 1 && !sectorId) {
+      setSectorId(myAssignedSectors[0].id);
+    }
+  }, [myAssignedSectors, sectorId]);
+
+  if (loadingEvent) {
+    return (
+      <Screen>
+        <View style={styles.center}>
+          <ActivityIndicator color={colors.cyan} size="large" />
+        </View>
+      </Screen>
+    );
+  }
 
   if (!id || !event) {
     return (
@@ -111,6 +152,27 @@ export default function ExceptionForm() {
     );
   }
 
+  // Sprint 9.6: el backend exige sectorId. Si el operador no está asignado
+  // a ninguno, no puede registrar excepciones — el coordinador tiene que
+  // asignarle un sector primero.
+  if (myAssignedSectors.length === 0) {
+    return (
+      <Screen>
+        <View style={styles.center}>
+          <Text style={styles.errorTitle}>Sin sectores asignados</Text>
+          <Text style={styles.errorBody}>
+            {loadSectorsError
+              ? `No se pudo cargar la lista de sectores: ${loadSectorsError}. Reintentá con red.`
+              : 'No estás asignado como operador a ningún sector de este evento. Contactá al coordinador para que te asigne y volvé a intentar.'}
+          </Text>
+          <View style={{ marginTop: spacing.lg, alignSelf: 'stretch' }}>
+            <Button label="Volver" variant="secondary" onPress={() => router.back()} />
+          </View>
+        </View>
+      </Screen>
+    );
+  }
+
   const trimmedDoc = documentNumber.trim();
   const trimmedFirst = firstName.trim();
   const trimmedLast = lastName.trim();
@@ -128,7 +190,8 @@ export default function ExceptionForm() {
     trimmedFirst.length >= 1 &&
     trimmedLast.length >= 1 &&
     justLen >= MIN_JUSTIFICATION &&
-    justLen <= MAX_JUSTIFICATION;
+    justLen <= MAX_JUSTIFICATION &&
+    !!sectorId;
 
   const onSubmit = () => {
     if (!user?.tenantId) {
@@ -147,6 +210,12 @@ export default function ExceptionForm() {
       return;
     }
 
+    if (!sectorId) {
+      setError('Selecciona un sector antes de continuar.');
+      return;
+    }
+    const sectorMeta = myAssignedSectors.find((s) => s.id === sectorId);
+
     setSubmitting(true);
     setError(null);
     try {
@@ -159,6 +228,9 @@ export default function ExceptionForm() {
         lastName: trimmedLast,
         phone: phone.trim() || undefined,
         justification: justification.trim(),
+        sectorId,
+        sectorName: sectorMeta?.name ?? null,
+        zona: sectorMeta?.zona ?? null,
       });
       // Saltamos directo al wizard con el citizen local. El usuario verá la
       // ficha pre-llenada con los datos que acaba de ingresar.
@@ -198,6 +270,52 @@ export default function ExceptionForm() {
               al coordinador.
             </Text>
           </View>
+
+          {/* Sector — el backend lo exige para gestor/asistente */}
+          <Text style={styles.sectionLabel}>Sector</Text>
+          {myAssignedSectors.length === 1 ? (
+            <View style={styles.sectorAuto}>
+              <Text style={styles.sectorAutoLabel}>Asignado a tu sector</Text>
+              <Text style={styles.sectorAutoName}>
+                {myAssignedSectors[0].name}
+              </Text>
+              <Text style={styles.sectorAutoZona}>
+                {myAssignedSectors[0].zona === 'urbana' ? '🏙 Urbana' : '🌾 Rural'}
+              </Text>
+            </View>
+          ) : (
+            <View style={styles.sectorList}>
+              {myAssignedSectors.map((s) => (
+                <Pressable
+                  key={s.id}
+                  onPress={() => setSectorId(s.id)}
+                  style={({ pressed }) => [
+                    styles.sectorOption,
+                    sectorId === s.id && styles.sectorOptionActive,
+                    pressed && { opacity: 0.85 },
+                  ]}
+                >
+                  <View style={{ flex: 1 }}>
+                    <Text
+                      style={[
+                        styles.sectorOptionName,
+                        sectorId === s.id && { color: colors.cyan },
+                      ]}
+                    >
+                      {s.name}
+                    </Text>
+                    <Text style={styles.sectorOptionMeta}>
+                      {s.zona === 'urbana' ? '🏙 Urbana' : '🌾 Rural'} ·{' '}
+                      {s.beneficiaryCount} pre-cargados
+                    </Text>
+                  </View>
+                  {sectorId === s.id && (
+                    <Text style={styles.sectorOptionCheck}>✓</Text>
+                  )}
+                </Pressable>
+              ))}
+            </View>
+          )}
 
           {/* Documento */}
           <Text style={styles.sectionLabel}>Documento</Text>
@@ -462,5 +580,65 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginTop: spacing.sm,
     lineHeight: 20,
+  },
+  sectorAuto: {
+    backgroundColor: colors.cyanSoft,
+    borderRadius: radii.md,
+    padding: spacing.md,
+    borderWidth: 1,
+    borderColor: colors.cyan,
+    marginBottom: spacing.md,
+  },
+  sectorAutoLabel: {
+    color: colors.cyan,
+    fontSize: 10,
+    fontWeight: fontWeights.bold,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  sectorAutoName: {
+    color: colors.textPrimary,
+    fontSize: fontSizes.md,
+    fontWeight: fontWeights.bold,
+    marginTop: 2,
+  },
+  sectorAutoZona: {
+    color: colors.textSecondary,
+    fontSize: fontSizes.xs,
+    marginTop: 2,
+  },
+  sectorList: {
+    gap: spacing.sm,
+    marginBottom: spacing.md,
+  },
+  sectorOption: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.md,
+    borderRadius: radii.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.bgInput,
+    gap: spacing.sm,
+  },
+  sectorOptionActive: {
+    borderColor: colors.cyan,
+    backgroundColor: colors.cyanSoft,
+  },
+  sectorOptionName: {
+    color: colors.textPrimary,
+    fontSize: fontSizes.md,
+    fontWeight: fontWeights.semibold,
+  },
+  sectorOptionMeta: {
+    color: colors.textMuted,
+    fontSize: fontSizes.xs,
+    marginTop: 2,
+  },
+  sectorOptionCheck: {
+    color: colors.cyan,
+    fontSize: fontSizes.lg,
+    fontWeight: fontWeights.extrabold,
   },
 });
