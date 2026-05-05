@@ -98,8 +98,17 @@ async function request<T>(
     if (token) headers.Authorization = `Bearer ${token}`;
   }
 
+  // Sprint 9.0: timeout 30s. Railway free-tier puede tener cold start de
+  // hasta 25s en la primera request del día. Si ya están todos los pods
+  // calientes, una request normal toma <500ms.
+  const timeoutMs = opts.timeoutMs ?? 30000;
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), opts.timeoutMs ?? 15000);
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
+  // Log visible en Metro logs para diagnóstico
+  const startedAt = Date.now();
+  // eslint-disable-next-line no-console
+  console.log(`[api] ${opts.method ?? 'GET'} ${url}`);
 
   let res: Response;
   try {
@@ -111,10 +120,20 @@ async function request<T>(
     });
   } catch (e) {
     clearTimeout(timeout);
-    const message = e instanceof Error ? e.message : 'Network error';
-    throw new ApiError('NETWORK_ERROR', message, 0);
+    const elapsed = Date.now() - startedAt;
+    const isAbort = e instanceof Error && e.name === 'AbortError';
+    const message = isAbort
+      ? `Timeout tras ${Math.round(elapsed / 1000)}s. Verifica internet o reintenta (Railway puede estar arrancando).`
+      : e instanceof Error
+        ? e.message
+        : 'Network error';
+    // eslint-disable-next-line no-console
+    console.error(`[api] FAIL ${url} (${elapsed}ms):`, message);
+    throw new ApiError(isAbort ? 'TIMEOUT' : 'NETWORK_ERROR', message, 0);
   }
   clearTimeout(timeout);
+  // eslint-disable-next-line no-console
+  console.log(`[api] ${res.status} ${url} (${Date.now() - startedAt}ms)`);
 
   if (!res.ok) {
     type ErrorBody = {
