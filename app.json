@@ -2,20 +2,26 @@
   "expo": {
     "name": "SICE Operador",
     "slug": "sice-operador",
-    "version": "0.1.0",
+    "version": "1.0.0",
     "orientation": "portrait",
     "userInterfaceStyle": "dark",
     "scheme": "sice",
     "platforms": [
       "android"
     ],
+    "owner": "santiquirogamolina",
     "android": {
       "package": "com.sice.operador",
+      "versionCode": 1,
       "permissions": [
         "android.permission.CAMERA",
         "android.permission.ACCESS_FINE_LOCATION",
         "android.permission.ACCESS_COARSE_LOCATION",
         "android.permission.RECORD_AUDIO"
+      ],
+      "blockedPermissions": [
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE"
       ]
     },
     "plugins": [
@@ -42,6 +48,9 @@
     "extra": {
       "apiUrl": "https://sice-backend-production.up.railway.app",
       "apiUrlDev": "http://10.0.2.2:4000"
+    },
+    "updates": {
+      "enabled": false
     }
   }
 }
