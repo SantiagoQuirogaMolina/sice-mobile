@@ -1,5 +1,11 @@
 /**
- * Sync queue — procesa pending_deliveries → backend.
+ * Sync queue — procesa pending_citizens, pending_event_beneficiaries y
+ * pending_deliveries → backend, en ese orden.
+ *
+ * Orden importa: una delivery offline para un PendingCitizen no puede subir
+ * hasta que el citizen tenga server_id. Un PendingEventBeneficiary no puede
+ * subir hasta tener citizen_server_id. Cada paso se reintenta de forma
+ * independiente con backoff.
  *
  * Diseño:
  *   - Re-entrada protegida (mutex `inFlight`) para evitar 2 procesos paralelos
@@ -7,9 +13,9 @@
  *   - Batch de 10 (no de 50 como web): mobile tiene foto+firma grandes,
  *     batches grandes saturan red móvil flaky.
  *   - Backoff exponencial: 30s, 1m, 2m, 4m, 8m... cap 30min.
- *   - Errores 4xx no-retryables → markDeliveryBlocked (operador decide).
- *   - 5xx y network → markDeliveryError con nextAttemptAt.
- *   - Conflict 409 → markDeliveryBlocked con flag conflict.
+ *   - Errores 4xx no-retryables → blocked (operador decide).
+ *   - 5xx y network → error con nextAttemptAt.
+ *   - Conflict 409 → blocked con flag conflict.
  *
  * Subscripción:
  *   - subscribeQueueEvents(cb) para que la UI se entere del progreso.
@@ -17,14 +23,26 @@
 
 import {
   countPendingSync,
+  getPendingCitizen,
+  getPendingEbByCitizen,
+  isLocalCitizen,
   listDeliveriesByStatus,
+  listPendingCitizensByStatus,
+  listPendingEbsByStatus,
   markDeliveryBlocked,
   markDeliveryError,
   markDeliverySynced,
   setDeliverySyncStatus,
+  updatePendingCitizenStatus,
+  updatePendingEbStatus,
   type PendingDelivery,
 } from '../offline/db';
-import { uploadDelivery, type SyncResult } from './transport';
+import {
+  uploadCitizen,
+  uploadDelivery,
+  uploadEventBeneficiary,
+  type SyncResult,
+} from './transport';
 
 export type QueueEvent =
   | { type: 'batch-start'; total: number }
@@ -81,16 +99,22 @@ let inFlight = false;
 const BATCH_SIZE = 10;
 const STUCK_THRESHOLD_MS = 60_000;
 
-/**
- * Toma un batch de pending+error y los procesa. No bloqueante: vuelve apenas
- * el último item del batch terminó.
- */
-export async function processSyncQueue(): Promise<{
+interface BatchTotals {
   processed: number;
   ok: number;
   failed: number;
   blocked: number;
-}> {
+}
+
+/**
+ * Toma un batch y lo procesa en 3 etapas:
+ *   1) PendingCitizens pendientes / con backoff vencido
+ *   2) PendingEventBeneficiaries cuyo citizen ya tiene serverId
+ *   3) PendingDeliveries (resolviendo citizenId local → serverId si aplica)
+ *
+ * No bloqueante: vuelve apenas el último item del batch terminó.
+ */
+export async function processSyncQueue(): Promise<BatchTotals> {
   if (inFlight) {
     return { processed: 0, ok: 0, failed: 0, blocked: 0 };
   }
@@ -108,73 +132,236 @@ export async function processSyncQueue(): Promise<{
       }
     }
 
-    // 1) Tomar pending + error con backoff vencido
-    const pending = listDeliveriesByStatus('pending');
-    const errors = listDeliveriesByStatus('error').filter((d) =>
-      isReady(d.nextAttemptAt),
-    );
-    const queue: PendingDelivery[] = [...pending, ...errors].slice(0, BATCH_SIZE);
+    const totals: BatchTotals = { processed: 0, ok: 0, failed: 0, blocked: 0 };
 
-    if (queue.length === 0) {
-      return { processed: 0, ok: 0, failed: 0, blocked: 0 };
-    }
+    // 1) Sincronizar citizens pendientes ───────────────────────────────────
+    await processCitizens(totals);
 
-    emit({ type: 'batch-start', total: queue.length });
+    // 2) Sincronizar event_beneficiaries que ya tienen citizen_server_id ───
+    await processEbs(totals);
 
-    let ok = 0;
-    let failed = 0;
-    let blocked = 0;
+    // 3) Sincronizar deliveries ────────────────────────────────────────────
+    await processDeliveries(totals);
 
-    for (const item of queue) {
-      // Marca syncing antes de subir → UI lo refleja
-      setDeliverySyncStatus(item.id, 'syncing', {
-        lastAttemptAt: new Date().toISOString(),
+    if (totals.processed > 0) {
+      emit({
+        type: 'batch-end',
+        processed: totals.processed,
+        ok: totals.ok,
+        failed: totals.failed,
+        blocked: totals.blocked,
       });
-      emit({ type: 'item-start', id: item.id });
-
-      const result = await uploadDelivery(item);
-
-      if (result.kind === 'ok') {
-        markDeliverySynced(item.id, result.serverId);
-        ok += 1;
-      } else if (result.kind === 'conflict') {
-        // Conflicto: el backend dice que ya existe. Lo marcamos blocked
-        // con la razón. El operador puede revisar desde la pantalla de sync.
-        markDeliveryBlocked(item.id, `Conflicto: ${result.reason}`);
-        blocked += 1;
-      } else if (!result.retryable) {
-        // 4xx con código semántico (event no capturable, citizen no existe, etc).
-        // No reintentar automático.
-        markDeliveryBlocked(item.id, result.message);
-        blocked += 1;
-        failed += 1;
-      } else {
-        // 5xx o network → backoff y reintentar después.
-        const next = nextBackoffISO(item.retryCount);
-        markDeliveryError(item.id, result.message, next);
-        failed += 1;
-      }
-
-      emit({ type: 'item-done', id: item.id, result });
     }
-
-    emit({
-      type: 'batch-end',
-      processed: queue.length,
-      ok,
-      failed,
-      blocked,
-    });
-    return { processed: queue.length, ok, failed, blocked };
+    return totals;
   } finally {
     inFlight = false;
   }
 }
 
+/* ─────────────────────────── Stage helpers ─────────────────────────── */
+
+async function processCitizens(totals: BatchTotals): Promise<void> {
+  const pending = listPendingCitizensByStatus('pending');
+  const errors = listPendingCitizensByStatus('error').filter((c) =>
+    isReady(c.nextAttemptAt),
+  );
+  const queue = [...pending, ...errors].slice(0, BATCH_SIZE);
+  if (queue.length === 0) return;
+
+  if (totals.processed === 0) emit({ type: 'batch-start', total: queue.length });
+
+  for (const c of queue) {
+    updatePendingCitizenStatus(c.localId, 'syncing');
+    emit({ type: 'item-start', id: c.localId });
+    const result = await uploadCitizen(c);
+    applyResult({
+      result,
+      retryCount: c.retryCount,
+      onOk: (serverId) =>
+        updatePendingCitizenStatus(c.localId, 'synced', {
+          serverId,
+          lastError: null,
+          nextAttemptAt: null,
+        }),
+      onBlocked: (msg) =>
+        updatePendingCitizenStatus(c.localId, 'blocked', {
+          lastError: msg,
+          nextAttemptAt: null,
+        }),
+      onError: (msg, next) =>
+        updatePendingCitizenStatus(c.localId, 'error', {
+          lastError: msg,
+          nextAttemptAt: next,
+          incrementRetry: true,
+        }),
+      totals,
+    });
+    emit({ type: 'item-done', id: c.localId, result });
+  }
+}
+
+async function processEbs(totals: BatchTotals): Promise<void> {
+  // Solo los EBs cuyo citizen YA está sincronizado (tiene server_id).
+  const pending = listPendingEbsByStatus('pending');
+  const errors = listPendingEbsByStatus('error').filter((eb) =>
+    isReady(eb.nextAttemptAt),
+  );
+  const candidates = [...pending, ...errors].slice(0, BATCH_SIZE);
+  if (candidates.length === 0) return;
+
+  if (totals.processed === 0)
+    emit({ type: 'batch-start', total: candidates.length });
+
+  for (const eb of candidates) {
+    // Resolver citizen_server_id si todavía está vacío
+    let citizenServerId = eb.citizenServerId;
+    if (!citizenServerId) {
+      const cit = getPendingCitizen(eb.citizenLocalId);
+      if (!cit?.serverId) {
+        // El citizen no terminó de sincronizar → diferimos este EB.
+        // No incrementamos retry porque no es un fallo de la EB en sí.
+        continue;
+      }
+      citizenServerId = cit.serverId;
+    }
+
+    updatePendingEbStatus(eb.localId, 'syncing', { citizenServerId });
+    emit({ type: 'item-start', id: eb.localId });
+    const result = await uploadEventBeneficiary({ ...eb, citizenServerId });
+    applyResult({
+      result,
+      retryCount: eb.retryCount,
+      onOk: (serverId) =>
+        updatePendingEbStatus(eb.localId, 'synced', {
+          serverId,
+          lastError: null,
+          nextAttemptAt: null,
+        }),
+      onBlocked: (msg) =>
+        updatePendingEbStatus(eb.localId, 'blocked', {
+          lastError: msg,
+          nextAttemptAt: null,
+        }),
+      onError: (msg, next) =>
+        updatePendingEbStatus(eb.localId, 'error', {
+          lastError: msg,
+          nextAttemptAt: next,
+          incrementRetry: true,
+        }),
+      totals,
+    });
+    emit({ type: 'item-done', id: eb.localId, result });
+  }
+}
+
+async function processDeliveries(totals: BatchTotals): Promise<void> {
+  // Tomar pending + error con backoff vencido
+  const pending = listDeliveriesByStatus('pending');
+  const errors = listDeliveriesByStatus('error').filter((d) =>
+    isReady(d.nextAttemptAt),
+  );
+  const queue: PendingDelivery[] = [...pending, ...errors].slice(0, BATCH_SIZE);
+  if (queue.length === 0) return;
+
+  if (totals.processed === 0) emit({ type: 'batch-start', total: queue.length });
+
+  for (const item of queue) {
+    // Si la delivery referencia un citizen local, debemos resolver el
+    // serverId antes de subir. Si el citizen aún no se sincronizó, dejamos
+    // la delivery pending (no la marcamos error; volverá a aparecer en el
+    // próximo batch tras procesar citizens).
+    let citizenServerId: string | undefined;
+    if (isLocalCitizen(item.citizenId)) {
+      const cit = getPendingCitizen(item.citizenId);
+      if (!cit?.serverId) {
+        continue; // diferida — no incrementar retry
+      }
+      citizenServerId = cit.serverId;
+    }
+
+    setDeliverySyncStatus(item.id, 'syncing', {
+      lastAttemptAt: new Date().toISOString(),
+    });
+    emit({ type: 'item-start', id: item.id });
+
+    const result = await uploadDelivery(item, { citizenServerId });
+
+    applyResult({
+      result,
+      retryCount: item.retryCount,
+      onOk: (serverId) => markDeliverySynced(item.id, serverId),
+      onBlocked: (msg) => markDeliveryBlocked(item.id, msg),
+      onError: (msg, next) => markDeliveryError(item.id, msg, next),
+      totals,
+    });
+    emit({ type: 'item-done', id: item.id, result });
+  }
+}
+
+interface ApplyResultArgs {
+  result: SyncResult;
+  retryCount: number;
+  onOk: (serverId: string) => void;
+  onBlocked: (msg: string) => void;
+  onError: (msg: string, nextAttemptAt: string) => void;
+  totals: BatchTotals;
+}
+
+function applyResult(args: ApplyResultArgs): void {
+  const { result, retryCount, onOk, onBlocked, onError, totals } = args;
+  totals.processed += 1;
+  if (result.kind === 'ok') {
+    onOk(result.serverId);
+    totals.ok += 1;
+  } else if (result.kind === 'conflict') {
+    onBlocked(`Conflicto: ${result.reason}`);
+    totals.blocked += 1;
+  } else if (!result.retryable) {
+    onBlocked(result.message);
+    totals.blocked += 1;
+    totals.failed += 1;
+  } else {
+    onError(result.message, nextBackoffISO(retryCount));
+    totals.failed += 1;
+  }
+}
+
+/** Pending sync count incluye citizens, EBs y deliveries pendientes/error. */
 export function getPendingCount(): number {
+  // Para simplificar la UI, el contador del header solo refleja deliveries.
+  // Una pantalla detallada de sync expone el desglose por tipo si es preciso.
   return countPendingSync();
 }
 
 export function isSyncInFlight(): boolean {
   return inFlight;
+}
+
+/**
+ * Eventos auxiliares: ¿hay items pending/error en cualquier capa?
+ *
+ * Útil para mostrar un badge "Sincronización pendiente" en el dashboard
+ * sin tener que sumar manualmente las 3 tablas en cada pantalla.
+ */
+export function hasAnyPending(): boolean {
+  if (countPendingSync() > 0) return true;
+  if (listPendingCitizensByStatus('pending').length > 0) return true;
+  if (listPendingCitizensByStatus('error').length > 0) return true;
+  if (listPendingEbsByStatus('pending').length > 0) return true;
+  if (listPendingEbsByStatus('error').length > 0) return true;
+  return false;
+}
+
+/**
+ * Devuelve true si la EB referenciada por (eventId, citizenLocalId) ya está
+ * synced. Útil para que el wizard sepa cuándo un PendingCitizen/EB están
+ * listos en backend (puede haber casos donde el operador entra al wizard
+ * mientras la EB sigue pending — la delivery quedará deferida pero entrará).
+ */
+export function isExceptionLinkSynced(
+  eventId: string,
+  citizenLocalId: string,
+): boolean {
+  const eb = getPendingEbByCitizen(eventId, citizenLocalId);
+  return eb?.syncStatus === 'synced';
 }

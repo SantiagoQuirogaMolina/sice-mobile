@@ -27,6 +27,8 @@ import { Screen } from '../../../../components/Screen';
 import { Button } from '../../../../components/Button';
 import {
   listDeliveriesByEvent,
+  listPendingCitizensByStatus,
+  listPendingEbsByStatus,
   unblockDelivery,
   type PendingDelivery,
   type SyncStatus,
@@ -47,6 +49,14 @@ export default function SyncScreen() {
   const { id: eventId } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
   const [items, setItems] = useState<PendingDelivery[]>([]);
+  const [exceptionTotals, setExceptionTotals] = useState({
+    citizensPending: 0,
+    citizensError: 0,
+    citizensBlocked: 0,
+    ebsPending: 0,
+    ebsError: 0,
+    ebsBlocked: 0,
+  });
   const [progress, setProgress] = useState({
     inFlight: false,
     total: 0,
@@ -68,6 +78,17 @@ export default function SyncScreen() {
       return order[a.syncStatus] - order[b.syncStatus];
     });
     setItems(list);
+    // Sprint 9.4: contar excepciones pendientes (citizens y EBs).
+    // Las contamos globales — un operador raramente trabaja >1 evento a la
+    // vez en mobile y son números pequeños.
+    setExceptionTotals({
+      citizensPending: listPendingCitizensByStatus('pending').length,
+      citizensError: listPendingCitizensByStatus('error').length,
+      citizensBlocked: listPendingCitizensByStatus('blocked').length,
+      ebsPending: listPendingEbsByStatus('pending').length,
+      ebsError: listPendingEbsByStatus('error').length,
+      ebsBlocked: listPendingEbsByStatus('blocked').length,
+    });
   };
 
   useEffect(() => {
@@ -201,6 +222,30 @@ export default function SyncScreen() {
           </View>
         )}
       </View>
+
+      {/* Sprint 9.4 — Banner de excepciones pendientes ─────────────────── */}
+      {(() => {
+        const totalExc =
+          exceptionTotals.citizensPending +
+          exceptionTotals.citizensError +
+          exceptionTotals.ebsPending +
+          exceptionTotals.ebsError;
+        const totalExcBlocked =
+          exceptionTotals.citizensBlocked + exceptionTotals.ebsBlocked;
+        if (totalExc === 0 && totalExcBlocked === 0) return null;
+        return (
+          <View style={styles.excBanner}>
+            <Text style={styles.excTitle}>EXCEPCIONES OFFLINE</Text>
+            <Text style={styles.excBody}>
+              {totalExc > 0 &&
+                `${totalExc} ${totalExc === 1 ? 'paso pendiente' : 'pasos pendientes'} (alta de ciudadano + vínculo al evento) antes de subir las entregas asociadas.`}
+              {totalExc > 0 && totalExcBlocked > 0 && '\n'}
+              {totalExcBlocked > 0 &&
+                `${totalExcBlocked} excepciones bloqueadas — revisa los errores reportados por el backend.`}
+            </Text>
+          </View>
+        );
+      })()}
 
       {/* Acciones */}
       <View style={styles.actions}>
@@ -475,5 +520,27 @@ const styles = StyleSheet.create({
     fontWeight: fontWeights.bold,
     letterSpacing: 0.5,
     textTransform: 'uppercase',
+  },
+  excBanner: {
+    marginHorizontal: spacing.lg,
+    marginTop: -spacing.sm,
+    marginBottom: spacing.md,
+    backgroundColor: colors.cyanSoft,
+    borderRadius: radii.md,
+    padding: spacing.md,
+    borderLeftWidth: 3,
+    borderLeftColor: colors.cyan,
+  },
+  excTitle: {
+    color: colors.cyan,
+    fontSize: 10,
+    fontWeight: fontWeights.bold,
+    letterSpacing: 0.5,
+    marginBottom: spacing.xs,
+  },
+  excBody: {
+    color: colors.textPrimary,
+    fontSize: fontSizes.xs,
+    lineHeight: 18,
   },
 });

@@ -239,6 +239,19 @@ export default function EventDetail() {
               router.push(`/event/${event.id}/beneficiaries` as never);
             }}
           />
+          {/* Sprint 9.4 — Excepciones offline. Solo si el evento las permite y
+              no está draft (no se puede capturar de cualquier modo). */}
+          {!isDraft && event.allowExceptions && (
+            <View style={{ marginTop: spacing.sm }}>
+              <Button
+                label="+ Registrar excepción"
+                variant="secondary"
+                onPress={() => {
+                  router.push(`/event/${event.id}/exception` as never);
+                }}
+              />
+            </View>
+          )}
           {counts.pendingSync > 0 && (
             <View style={{ marginTop: spacing.sm }}>
               <Button

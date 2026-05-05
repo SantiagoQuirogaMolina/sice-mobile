@@ -13,7 +13,11 @@
 
 import { api, ApiError } from '../api/client';
 import { sha256OfDataUrl } from '../crypto/hash';
-import type { PendingDelivery } from '../offline/db';
+import type {
+  PendingCitizen,
+  PendingDelivery,
+  PendingEventBeneficiary,
+} from '../offline/db';
 
 export type SyncResult =
   | { kind: 'ok'; serverId: string }
@@ -28,6 +32,14 @@ interface UploadEvidenceResponse {
 interface BackendDeliveryResponse {
   id: string;
   serverFolio: string;
+}
+
+interface BackendCitizenResponse {
+  id: string;
+}
+
+interface BackendEventBeneficiaryResponse {
+  id: string;
 }
 
 async function uploadEvidence(
@@ -77,7 +89,96 @@ function classify(err: unknown): SyncResult {
   };
 }
 
-export async function uploadDelivery(d: PendingDelivery): Promise<SyncResult> {
+/**
+ * Sprint 9.4: sube un PendingCitizen al backend (POST /api/v1/citizens).
+ *
+ * El backend devuelve `{ id }` con el UUID server-side. El llamador debe
+ * persistir ese serverId en la fila local con updatePendingCitizenStatus.
+ *
+ * Idempotencia: el backend valida unicidad por (tenantId, documentType,
+ * documentNumber) y, si ya existe, devuelve el citizen existente. Por ende
+ * reintentos no crean duplicados — pero si el operador escribió mal el
+ * documento, el conflict 409 quedará blocked para inspección manual.
+ */
+export async function uploadCitizen(c: PendingCitizen): Promise<SyncResult> {
+  try {
+    // Source 'ad_hoc_assistant' (CitizenSource enum del backend) marca que el
+    // ciudadano fue creado por un operador de campo durante una excepción —
+    // queda en auditoría como tal.
+    const body: Record<string, unknown> = {
+      documentType: c.documentType,
+      documentNumber: c.documentNumber,
+      firstName: c.firstName,
+      lastName: c.lastName,
+      source: 'ad_hoc_assistant',
+    };
+    if (c.phone) body.phone = c.phone;
+    if (c.email) body.email = c.email;
+    if (c.tipoZona) body.tipoZona = c.tipoZona;
+    if (c.address) body.address = c.address;
+    if (c.barrio) body.barrio = c.barrio;
+    if (c.vereda) body.vereda = c.vereda;
+    if (c.sectorRural) body.sectorRural = c.sectorRural;
+
+    const res = await api.post<BackendCitizenResponse>('/api/v1/citizens', body);
+    return { kind: 'ok', serverId: res.id };
+  } catch (err) {
+    return classify(err);
+  }
+}
+
+/**
+ * Sprint 9.4: sube un PendingEventBeneficiary al backend
+ * (POST /api/v1/events/:eventId/beneficiaries).
+ *
+ * Pre: el citizen DEBE estar ya sincronizado — el queue se encarga de
+ * llamar uploadCitizen primero y de propagar citizenServerId acá.
+ *
+ * Excepciones requieren `exceptionJustification` (>= 20 chars). Es
+ * responsabilidad de la UI exigir la longitud al registrar.
+ */
+export async function uploadEventBeneficiary(
+  eb: PendingEventBeneficiary,
+): Promise<SyncResult> {
+  if (!eb.citizenServerId) {
+    return {
+      kind: 'error',
+      message: 'citizenServerId faltante; sincronizar citizen primero',
+      retryable: true,
+    };
+  }
+  try {
+    const body: Record<string, unknown> = {
+      citizenId: eb.citizenServerId,
+      source: eb.source === 'exception' ? 'exception' : 'ad_hoc',
+    };
+    if (eb.sectorId) body.sectorId = eb.sectorId;
+    if (eb.source === 'exception' && eb.justification) {
+      body.exceptionJustification = eb.justification;
+    }
+    const res = await api.post<BackendEventBeneficiaryResponse>(
+      `/api/v1/events/${eb.eventId}/beneficiaries`,
+      body,
+    );
+    return { kind: 'ok', serverId: res.id };
+  } catch (err) {
+    return classify(err);
+  }
+}
+
+export interface UploadDeliveryOverrides {
+  /**
+   * Sprint 9.4: si la delivery se creó offline para un PendingCitizen
+   * (citizenId = localId), el queue la sustituye acá por el UUID server-side
+   * antes del POST a /deliveries. Si está ausente se usa d.citizenId tal cual.
+   */
+  citizenServerId?: string;
+}
+
+export async function uploadDelivery(
+  d: PendingDelivery,
+  overrides: UploadDeliveryOverrides = {},
+): Promise<SyncResult> {
   try {
     // 1) Subir firma (si data URL — si ya es http URL, no re-sube)
     if (!d.signatureDataUrl) {
@@ -114,12 +215,13 @@ export async function uploadDelivery(d: PendingDelivery): Promise<SyncResult> {
       : { url: d.photoDataUrl, sha256: photoHash };
 
     // 3) Crear el Delivery
+    const citizenId = overrides.citizenServerId ?? d.citizenId;
     const res = await api.post<BackendDeliveryResponse>(
       '/api/v1/deliveries',
       {
         id: d.id, // el id local es la idempotency key
         eventId: d.eventId,
-        citizenId: d.citizenId,
+        citizenId,
         capturedAt: d.capturedAt,
         signatureUrl: sig.url,
         signatureSha256: sig.sha256,

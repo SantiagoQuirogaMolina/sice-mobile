@@ -119,6 +119,63 @@ function initSchema(db: SQLite.SQLiteDatabase): void {
 
     CREATE INDEX IF NOT EXISTS idx_pending_citizen
       ON pending_deliveries(event_id, citizen_id);
+
+    -- Sprint 9.4: ciudadanos creados offline (excepciones).
+    -- Cuando el operador registra una excepción sin red, creamos el
+    -- ciudadano localmente con un local_id (UUID) y, al volver la red,
+    -- se POSTea a /citizens. server_id queda con el UUID del backend.
+    CREATE TABLE IF NOT EXISTS pending_citizens (
+      local_id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL,
+      document_type TEXT NOT NULL,
+      document_number TEXT NOT NULL,
+      first_name TEXT NOT NULL,
+      last_name TEXT NOT NULL,
+      phone TEXT,
+      email TEXT,
+      tipo_zona TEXT,
+      address TEXT,
+      barrio TEXT,
+      vereda TEXT,
+      sector_rural TEXT,
+      sync_status TEXT NOT NULL DEFAULT 'pending',
+      retry_count INTEGER NOT NULL DEFAULT 0,
+      last_error TEXT,
+      next_attempt_at TEXT,
+      last_attempt_at TEXT,
+      server_id TEXT,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_pending_citizens_status
+      ON pending_citizens(sync_status);
+
+    -- EventBeneficiary creados offline. Apuntan al pending_citizen.local_id
+    -- antes de que el citizen tenga server_id; tras sync se actualiza
+    -- citizen_server_id y se POSTea /events/:id/beneficiaries.
+    CREATE TABLE IF NOT EXISTS pending_event_beneficiaries (
+      local_id TEXT PRIMARY KEY,
+      event_id TEXT NOT NULL,
+      citizen_local_id TEXT NOT NULL,
+      citizen_server_id TEXT,
+      sector_id TEXT,
+      source TEXT NOT NULL DEFAULT 'exception',
+      justification TEXT,
+      sync_status TEXT NOT NULL DEFAULT 'pending',
+      retry_count INTEGER NOT NULL DEFAULT 0,
+      last_error TEXT,
+      next_attempt_at TEXT,
+      last_attempt_at TEXT,
+      server_id TEXT,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_pending_eb_status
+      ON pending_event_beneficiaries(sync_status);
+    CREATE INDEX IF NOT EXISTS idx_pending_eb_event
+      ON pending_event_beneficiaries(event_id);
+    CREATE INDEX IF NOT EXISTS idx_pending_eb_citizen
+      ON pending_event_beneficiaries(citizen_local_id);
   `);
 }
 
@@ -746,5 +803,399 @@ export function purgeEvent(eventId: string): void {
     db.runSync(`DELETE FROM cached_events WHERE id = ?`, [eventId]);
     db.runSync(`DELETE FROM cached_beneficiaries WHERE event_id = ?`, [eventId]);
     db.runSync(`DELETE FROM pending_deliveries WHERE event_id = ?`, [eventId]);
+    db.runSync(`DELETE FROM pending_event_beneficiaries WHERE event_id = ?`, [
+      eventId,
+    ]);
   });
+}
+
+/* ─────────────────────────── Sprint 9.4: Pending citizens ─────────────────────────── */
+
+export interface PendingCitizen {
+  localId: string;
+  tenantId: string;
+  documentType: DocumentType;
+  documentNumber: string;
+  firstName: string;
+  lastName: string;
+  phone: string | null;
+  email: string | null;
+  tipoZona: ZonaType | null;
+  address: string | null;
+  barrio: string | null;
+  vereda: string | null;
+  sectorRural: string | null;
+  syncStatus: SyncStatus;
+  retryCount: number;
+  lastError: string | null;
+  nextAttemptAt: string | null;
+  lastAttemptAt: string | null;
+  serverId: string | null;
+  createdAt: string;
+}
+
+export function savePendingCitizen(c: PendingCitizen): void {
+  const db = getDB();
+  db.runSync(
+    `INSERT OR REPLACE INTO pending_citizens
+       (local_id, tenant_id, document_type, document_number, first_name,
+        last_name, phone, email, tipo_zona, address, barrio, vereda,
+        sector_rural, sync_status, retry_count, last_error, next_attempt_at,
+        last_attempt_at, server_id, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      c.localId,
+      c.tenantId,
+      c.documentType,
+      c.documentNumber,
+      c.firstName,
+      c.lastName,
+      c.phone,
+      c.email,
+      c.tipoZona,
+      c.address,
+      c.barrio,
+      c.vereda,
+      c.sectorRural,
+      c.syncStatus,
+      c.retryCount,
+      c.lastError,
+      c.nextAttemptAt,
+      c.lastAttemptAt,
+      c.serverId,
+      c.createdAt,
+    ],
+  );
+}
+
+export function getPendingCitizen(localId: string): PendingCitizen | null {
+  const db = getDB();
+  const row = db.getFirstSync<Record<string, unknown>>(
+    `SELECT * FROM pending_citizens WHERE local_id = ?`,
+    [localId],
+  );
+  return row ? rowToPendingCitizen(row) : null;
+}
+
+export function listPendingCitizensByStatus(
+  status: SyncStatus,
+): PendingCitizen[] {
+  const db = getDB();
+  const rows = db.getAllSync<Record<string, unknown>>(
+    `SELECT * FROM pending_citizens WHERE sync_status = ? ORDER BY created_at ASC`,
+    [status],
+  );
+  return rows.map(rowToPendingCitizen);
+}
+
+export function updatePendingCitizenStatus(
+  localId: string,
+  status: SyncStatus,
+  patch?: {
+    serverId?: string | null;
+    lastError?: string | null;
+    nextAttemptAt?: string | null;
+    incrementRetry?: boolean;
+  },
+): void {
+  const db = getDB();
+  const fragments: string[] = [`sync_status = ?`];
+  const args: (string | number | null)[] = [status];
+  fragments.push(`last_attempt_at = ?`);
+  args.push(new Date().toISOString());
+  if (patch?.serverId !== undefined) {
+    fragments.push(`server_id = ?`);
+    args.push(patch.serverId);
+  }
+  if (patch?.lastError !== undefined) {
+    fragments.push(`last_error = ?`);
+    args.push(patch.lastError);
+  }
+  if (patch?.nextAttemptAt !== undefined) {
+    fragments.push(`next_attempt_at = ?`);
+    args.push(patch.nextAttemptAt);
+  }
+  if (patch?.incrementRetry) {
+    fragments.push(`retry_count = retry_count + 1`);
+  }
+  args.push(localId);
+  db.runSync(
+    `UPDATE pending_citizens SET ${fragments.join(', ')} WHERE local_id = ?`,
+    args,
+  );
+}
+
+function rowToPendingCitizen(row: Record<string, unknown>): PendingCitizen {
+  return {
+    localId: row.local_id as string,
+    tenantId: row.tenant_id as string,
+    documentType: row.document_type as DocumentType,
+    documentNumber: row.document_number as string,
+    firstName: row.first_name as string,
+    lastName: row.last_name as string,
+    phone: (row.phone as string | null) ?? null,
+    email: (row.email as string | null) ?? null,
+    tipoZona: (row.tipo_zona as ZonaType | null) ?? null,
+    address: (row.address as string | null) ?? null,
+    barrio: (row.barrio as string | null) ?? null,
+    vereda: (row.vereda as string | null) ?? null,
+    sectorRural: (row.sector_rural as string | null) ?? null,
+    syncStatus: row.sync_status as SyncStatus,
+    retryCount: (row.retry_count as number) ?? 0,
+    lastError: (row.last_error as string | null) ?? null,
+    nextAttemptAt: (row.next_attempt_at as string | null) ?? null,
+    lastAttemptAt: (row.last_attempt_at as string | null) ?? null,
+    serverId: (row.server_id as string | null) ?? null,
+    createdAt: row.created_at as string,
+  };
+}
+
+/* ─────────────────────────── Sprint 9.4: Pending event beneficiaries ─────────────────────────── */
+
+export interface PendingEventBeneficiary {
+  localId: string;
+  eventId: string;
+  citizenLocalId: string; // FK a pending_citizens.local_id
+  citizenServerId: string | null; // se llena tras sync del citizen
+  sectorId: string | null;
+  source: 'exception' | 'ad_hoc';
+  justification: string | null;
+  syncStatus: SyncStatus;
+  retryCount: number;
+  lastError: string | null;
+  nextAttemptAt: string | null;
+  lastAttemptAt: string | null;
+  serverId: string | null;
+  createdAt: string;
+}
+
+export function savePendingEventBeneficiary(eb: PendingEventBeneficiary): void {
+  const db = getDB();
+  db.runSync(
+    `INSERT OR REPLACE INTO pending_event_beneficiaries
+       (local_id, event_id, citizen_local_id, citizen_server_id, sector_id,
+        source, justification, sync_status, retry_count, last_error,
+        next_attempt_at, last_attempt_at, server_id, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      eb.localId,
+      eb.eventId,
+      eb.citizenLocalId,
+      eb.citizenServerId,
+      eb.sectorId,
+      eb.source,
+      eb.justification,
+      eb.syncStatus,
+      eb.retryCount,
+      eb.lastError,
+      eb.nextAttemptAt,
+      eb.lastAttemptAt,
+      eb.serverId,
+      eb.createdAt,
+    ],
+  );
+}
+
+export function getPendingEbByCitizen(
+  eventId: string,
+  citizenLocalId: string,
+): PendingEventBeneficiary | null {
+  const db = getDB();
+  const row = db.getFirstSync<Record<string, unknown>>(
+    `SELECT * FROM pending_event_beneficiaries
+       WHERE event_id = ? AND citizen_local_id = ?`,
+    [eventId, citizenLocalId],
+  );
+  return row ? rowToPendingEb(row) : null;
+}
+
+export function listPendingEbsByStatus(
+  status: SyncStatus,
+): PendingEventBeneficiary[] {
+  const db = getDB();
+  const rows = db.getAllSync<Record<string, unknown>>(
+    `SELECT * FROM pending_event_beneficiaries
+       WHERE sync_status = ? ORDER BY created_at ASC`,
+    [status],
+  );
+  return rows.map(rowToPendingEb);
+}
+
+export function updatePendingEbStatus(
+  localId: string,
+  status: SyncStatus,
+  patch?: {
+    citizenServerId?: string | null;
+    serverId?: string | null;
+    lastError?: string | null;
+    nextAttemptAt?: string | null;
+    incrementRetry?: boolean;
+  },
+): void {
+  const db = getDB();
+  const fragments: string[] = [`sync_status = ?`];
+  const args: (string | number | null)[] = [status];
+  fragments.push(`last_attempt_at = ?`);
+  args.push(new Date().toISOString());
+  if (patch?.citizenServerId !== undefined) {
+    fragments.push(`citizen_server_id = ?`);
+    args.push(patch.citizenServerId);
+  }
+  if (patch?.serverId !== undefined) {
+    fragments.push(`server_id = ?`);
+    args.push(patch.serverId);
+  }
+  if (patch?.lastError !== undefined) {
+    fragments.push(`last_error = ?`);
+    args.push(patch.lastError);
+  }
+  if (patch?.nextAttemptAt !== undefined) {
+    fragments.push(`next_attempt_at = ?`);
+    args.push(patch.nextAttemptAt);
+  }
+  if (patch?.incrementRetry) {
+    fragments.push(`retry_count = retry_count + 1`);
+  }
+  args.push(localId);
+  db.runSync(
+    `UPDATE pending_event_beneficiaries SET ${fragments.join(', ')}
+       WHERE local_id = ?`,
+    args,
+  );
+}
+
+function rowToPendingEb(row: Record<string, unknown>): PendingEventBeneficiary {
+  return {
+    localId: row.local_id as string,
+    eventId: row.event_id as string,
+    citizenLocalId: row.citizen_local_id as string,
+    citizenServerId: (row.citizen_server_id as string | null) ?? null,
+    sectorId: (row.sector_id as string | null) ?? null,
+    source: row.source as 'exception' | 'ad_hoc',
+    justification: (row.justification as string | null) ?? null,
+    syncStatus: row.sync_status as SyncStatus,
+    retryCount: (row.retry_count as number) ?? 0,
+    lastError: (row.last_error as string | null) ?? null,
+    nextAttemptAt: (row.next_attempt_at as string | null) ?? null,
+    lastAttemptAt: (row.last_attempt_at as string | null) ?? null,
+    serverId: (row.server_id as string | null) ?? null,
+    createdAt: row.created_at as string,
+  };
+}
+
+/**
+ * Helper para registrar una excepción offline en una sola transacción:
+ *   1. Guarda pending_citizen
+ *   2. Guarda pending_event_beneficiary
+ *   3. Inserta cached_beneficiary para que aparezca en la lista del operador
+ *      con citizenId = pending_citizen.localId
+ *
+ * Devuelve los local IDs para que el wizard navegue al delivery con
+ * citizenId = citizenLocalId.
+ */
+export function registerExceptionOffline(input: {
+  tenantId: string;
+  eventId: string;
+  documentType: DocumentType;
+  documentNumber: string;
+  firstName: string;
+  lastName: string;
+  phone?: string;
+  email?: string;
+  sectorId?: string | null;
+  sectorName?: string | null;
+  zona?: ZonaType | null;
+  justification: string;
+}): { citizenLocalId: string; ebLocalId: string } {
+  const db = getDB();
+  const citizenLocalId = newOfflineId();
+  const ebLocalId = newOfflineId();
+  const now = new Date().toISOString();
+  const docNorm = normalizeDocument(input.documentNumber);
+  const fullName = `${input.firstName.trim()} ${input.lastName.trim()}`.trim();
+
+  db.withTransactionSync(() => {
+    // 1) pending_citizen
+    const barrio =
+      input.zona === 'urbana' ? input.sectorName ?? null : null;
+    const vereda =
+      input.zona === 'rural' ? input.sectorName ?? null : null;
+    db.runSync(
+      `INSERT INTO pending_citizens
+         (local_id, tenant_id, document_type, document_number, first_name,
+          last_name, phone, email, tipo_zona, address, barrio, vereda,
+          sector_rural, sync_status, retry_count, last_error, next_attempt_at,
+          last_attempt_at, server_id, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, NULL, NULL,
+               NULL, NULL, ?)`,
+      [
+        citizenLocalId,
+        input.tenantId,
+        input.documentType,
+        input.documentNumber,
+        input.firstName.trim(),
+        input.lastName.trim(),
+        input.phone?.trim() || null,
+        input.email?.trim().toLowerCase() || null,
+        input.zona ?? null,
+        null,
+        barrio,
+        vereda,
+        null,
+        now,
+      ],
+    );
+
+    // 2) pending_event_beneficiary
+    db.runSync(
+      `INSERT INTO pending_event_beneficiaries
+         (local_id, event_id, citizen_local_id, citizen_server_id, sector_id,
+          source, justification, sync_status, retry_count, last_error,
+          next_attempt_at, last_attempt_at, server_id, created_at)
+       VALUES (?, ?, ?, NULL, ?, 'exception', ?, 'pending', 0, NULL, NULL,
+               NULL, NULL, ?)`,
+      [
+        ebLocalId,
+        input.eventId,
+        citizenLocalId,
+        input.sectorId ?? null,
+        input.justification,
+        now,
+      ],
+    );
+
+    // 3) cached_beneficiary para que aparezca en la lista del operador
+    db.runSync(
+      `INSERT OR REPLACE INTO cached_beneficiaries
+         (id, event_id, citizen_id, document_type, document_number,
+          document_normalized, full_name, name_normalized, sector_id,
+          sector_name, zona, delivery_status, has_local_delivery)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0)`,
+      [
+        ebLocalId,
+        input.eventId,
+        citizenLocalId,
+        input.documentType,
+        input.documentNumber,
+        docNorm,
+        fullName,
+        normalizeName(fullName),
+        input.sectorId ?? null,
+        input.sectorName ?? null,
+        input.zona ?? null,
+      ],
+    );
+  });
+
+  return { citizenLocalId, ebLocalId };
+}
+
+/** ¿Este citizenId es de un PendingCitizen offline (aún no en backend)? */
+export function isLocalCitizen(citizenId: string): boolean {
+  const db = getDB();
+  const row = db.getFirstSync<{ c: number }>(
+    `SELECT COUNT(*) as c FROM pending_citizens WHERE local_id = ?`,
+    [citizenId],
+  );
+  return (row?.c ?? 0) > 0;
 }
