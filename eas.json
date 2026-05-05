@@ -12,7 +12,8 @@
         "gradleCommand": ":app:assembleDebug"
       },
       "env": {
-        "EXPO_PUBLIC_API_URL": "https://sice-backend-production.up.railway.app"
+        "EXPO_PUBLIC_API_URL": "https://sice-backend-production.up.railway.app",
+        "NPM_CONFIG_LEGACY_PEER_DEPS": "true"
       }
     },
     "preview": {
@@ -21,7 +22,8 @@
         "buildType": "apk"
       },
       "env": {
-        "EXPO_PUBLIC_API_URL": "https://sice-backend-production.up.railway.app"
+        "EXPO_PUBLIC_API_URL": "https://sice-backend-production.up.railway.app",
+        "NPM_CONFIG_LEGACY_PEER_DEPS": "true"
       }
     },
     "production": {
@@ -29,7 +31,8 @@
         "buildType": "app-bundle"
       },
       "env": {
-        "EXPO_PUBLIC_API_URL": "https://sice-backend-production.up.railway.app"
+        "EXPO_PUBLIC_API_URL": "https://sice-backend-production.up.railway.app",
+        "NPM_CONFIG_LEGACY_PEER_DEPS": "true"
       }
     }
   },
