@@ -47,7 +47,11 @@
     },
     "extra": {
       "apiUrl": "https://sice-backend-production.up.railway.app",
-      "apiUrlDev": "http://10.0.2.2:4000"
+      "apiUrlDev": "http://10.0.2.2:4000",
+      "router": {},
+      "eas": {
+        "projectId": "18b90edd-7dbc-41e6-9c8e-84ee80b1b85f"
+      }
     },
     "updates": {
       "enabled": false
