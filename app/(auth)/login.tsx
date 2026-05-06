@@ -31,20 +31,46 @@ import {
 /**
  * DEMO_OPERATORS — auto-fill para operadores de campo seeded.
  *
- * Sprint 9.7 paso 2 (factory-reset): la BD quedó sin operadores
- * pre-cargados. Los gestores se crean desde la web (super_admin →
- * coordinator → digitador o coordinator → gestor). Cuando el operador
- * en campo recibe sus credenciales del coordinador, las ingresa
- * manualmente la primera vez. No hay chips para evitar confusión.
+ * Solo aparecen si el endpoint `/_diag/wipe-and-reseed` o
+ * `/_diag/ensure-demo-users` se ha corrido contra la BD activa.
+ * Si la BD está en factory-reset, ninguno de estos credentials va
+ * a funcionar (excepto platform admin desde la web).
  *
- * Si hay datos seeded en testing futuro, esta lista se vuelve a llenar.
+ * Mantener visibles también en builds release durante testing.
+ * Antes del release a producción real: borrar este bloque o ponerlo
+ * detrás de un flag de entorno.
  */
 const DEMO_OPERATORS: Array<{
   email: string;
   label: string;
   sub: string;
   initials: string;
-}> = [];
+}> = [
+  {
+    email: 'gestor1@tunja.gov.co',
+    label: 'Gestor 1 · Tunja',
+    sub: 'Andrés Pulido',
+    initials: 'AP',
+  },
+  {
+    email: 'gestor2@tunja.gov.co',
+    label: 'Gestor 2 · Tunja',
+    sub: 'María Cárdenas',
+    initials: 'MC',
+  },
+  {
+    email: 'gestor1@combita.gov.co',
+    label: 'Gestor 1 · Cómbita',
+    sub: 'Jorge Buitrago',
+    initials: 'JB',
+  },
+  {
+    email: 'gestor2@combita.gov.co',
+    label: 'Gestor 2 · Cómbita',
+    sub: 'Patricia Vargas',
+    initials: 'PV',
+  },
+];
 
 const DEMO_PASSWORD = 'demo123';
 
@@ -128,8 +154,9 @@ export default function LoginScreen() {
           </View>
         </View>
 
-        {/* Demo login chips — pre-llena email+pass de operadores seeded */}
-        {__DEV__ && (
+        {/* Demo login chips — pre-llena email+pass de operadores seeded.
+            Visibles también en release durante testing. */}
+        {DEMO_OPERATORS.length > 0 && (
           <View style={styles.demoSection}>
             <Text style={styles.demoTitle}>Acceso rápido (demo)</Text>
             <Text style={styles.demoSubtitle}>
