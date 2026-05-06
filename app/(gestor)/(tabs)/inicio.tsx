@@ -32,6 +32,8 @@ import {
   spacing,
 } from '../../../lib/theme/tokens';
 
+type SortMode = 'upcoming' | 'recent';
+
 export default function InicioTab() {
   const router = useRouter();
   const user = useAuthStore((s) => s.user);
@@ -40,6 +42,7 @@ export default function InicioTab() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [sortMode, setSortMode] = useState<SortMode>('upcoming');
 
   const load = async () => {
     setError(null);
@@ -72,6 +75,17 @@ export default function InicioTab() {
     void load();
   };
 
+  // Orden por fecha: "Próximos" muestra primero los que aún no terminan,
+  // ordenados por startDate asc. "Recientes" muestra primero los más
+  // recientes ordenados por endDate desc (útil para volver a un evento
+  // que se cerró ayer y revisar registros).
+  const sortedEvents = [...events].sort((a, b) => {
+    if (sortMode === 'upcoming') {
+      return new Date(a.startDate).getTime() - new Date(b.startDate).getTime();
+    }
+    return new Date(b.endDate).getTime() - new Date(a.endDate).getTime();
+  });
+
   if (loading) {
     return (
       <Screen>
@@ -99,8 +113,46 @@ export default function InicioTab() {
         </View>
       )}
 
+      {/* Toggle de orden por fecha (M2) */}
+      {events.length > 1 && (
+        <View style={styles.sortRow}>
+          <Pressable
+            onPress={() => setSortMode('upcoming')}
+            style={[
+              styles.sortChip,
+              sortMode === 'upcoming' && styles.sortChipActive,
+            ]}
+          >
+            <Text
+              style={[
+                styles.sortChipText,
+                sortMode === 'upcoming' && styles.sortChipTextActive,
+              ]}
+            >
+              Próximos
+            </Text>
+          </Pressable>
+          <Pressable
+            onPress={() => setSortMode('recent')}
+            style={[
+              styles.sortChip,
+              sortMode === 'recent' && styles.sortChipActive,
+            ]}
+          >
+            <Text
+              style={[
+                styles.sortChipText,
+                sortMode === 'recent' && styles.sortChipTextActive,
+              ]}
+            >
+              Recientes
+            </Text>
+          </Pressable>
+        </View>
+      )}
+
       <FlatList
-        data={events}
+        data={sortedEvents}
         keyExtractor={(e) => e.id}
         contentContainerStyle={styles.listContent}
         refreshControl={
@@ -133,79 +185,157 @@ export default function InicioTab() {
             </View>
           </View>
         }
-        renderItem={({ item }) => (
-          <Pressable
-            onPress={() => {
-              router.push(`/event/${item.id}` as never);
-            }}
-            style={({ pressed }) => [
-              styles.eventCard,
-              pressed && { opacity: 0.85 },
-            ]}
-          >
-            <View style={styles.eventHeader}>
-              <Text style={styles.eventName} numberOfLines={2}>
-                {item.name}
-              </Text>
-              <View
-                style={[
-                  styles.statusChip,
-                  {
-                    backgroundColor:
-                      item.status === 'active'
-                        ? colors.successBg
-                        : item.status === 'draft'
-                          ? colors.warningBg
-                          : colors.bgInput,
-                  },
-                ]}
-              >
-                <Text
+        renderItem={({ item }) => {
+          const isCompleted =
+            item.status === 'completed' ||
+            item.status === 'archived' ||
+            (item.type === 'A' &&
+              item.totalBeneficiaries > 0 &&
+              item.totalDelivered >= item.totalBeneficiaries);
+          return (
+            <Pressable
+              onPress={() => {
+                router.push(`/event/${item.id}` as never);
+              }}
+              style={({ pressed }) => [
+                styles.eventCard,
+                pressed && { opacity: 0.85 },
+              ]}
+            >
+              <View style={styles.eventHeader}>
+                <Text style={styles.eventName} numberOfLines={2}>
+                  {item.name}
+                </Text>
+                <View
                   style={[
-                    styles.statusText,
+                    styles.statusChip,
                     {
-                      color:
-                        item.status === 'active'
-                          ? colors.success
+                      backgroundColor: isCompleted
+                        ? colors.successBg
+                        : item.status === 'active'
+                          ? colors.successBg
                           : item.status === 'draft'
-                            ? colors.warning
-                            : colors.textMuted,
+                            ? colors.warningBg
+                            : colors.bgInput,
                     },
                   ]}
                 >
-                  {item.status === 'active'
-                    ? 'Activo'
-                    : item.status === 'draft'
-                      ? 'Borrador'
-                      : item.status}
+                  <Text
+                    style={[
+                      styles.statusText,
+                      {
+                        color: isCompleted
+                          ? colors.success
+                          : item.status === 'active'
+                            ? colors.success
+                            : item.status === 'draft'
+                              ? colors.warning
+                              : colors.textMuted,
+                      },
+                    ]}
+                  >
+                    {isCompleted
+                      ? '✓ Completado'
+                      : item.status === 'active'
+                        ? 'Activo'
+                        : item.status === 'draft'
+                          ? 'Borrador'
+                          : item.status}
+                  </Text>
+                </View>
+              </View>
+
+              <Text style={styles.eventLocation}>
+                {item.municipio} ·{' '}
+                {item.type === 'A' ? 'Tipo A · lista' : 'Tipo B · auto-registro'}
+              </Text>
+
+              {/* Fechas (M3) */}
+              <Text style={styles.eventDate}>
+                {formatEventDateRange(item.startDate, item.endDate)}
+              </Text>
+
+              <View style={styles.eventStats}>
+                <View>
+                  <Text style={styles.statLabel}>Total</Text>
+                  <Text style={styles.statValue}>{item.totalBeneficiaries}</Text>
+                </View>
+                <View>
+                  <Text style={styles.statLabel}>Entregadas</Text>
+                  <Text style={[styles.statValue, { color: colors.success }]}>
+                    {item.totalDelivered}
+                  </Text>
+                </View>
+                <View style={{ flex: 1 }} />
+                <Text style={styles.eventCta}>
+                  {isCompleted ? 'Ver →' : 'Abrir →'}
                 </Text>
               </View>
-            </View>
-
-            <Text style={styles.eventLocation}>
-              {item.municipio} ·{' '}
-              {item.type === 'A' ? 'Tipo A · lista' : 'Tipo B · auto-registro'}
-            </Text>
-
-            <View style={styles.eventStats}>
-              <View>
-                <Text style={styles.statLabel}>Total</Text>
-                <Text style={styles.statValue}>{item.totalBeneficiaries}</Text>
-              </View>
-              <View>
-                <Text style={styles.statLabel}>Entregadas</Text>
-                <Text style={[styles.statValue, { color: colors.success }]}>
-                  {item.totalDelivered}
-                </Text>
-              </View>
-              <View style={{ flex: 1 }} />
-              <Text style={styles.eventCta}>Abrir →</Text>
-            </View>
-          </Pressable>
-        )}
+            </Pressable>
+          );
+        }}
       />
     </Screen>
   );
+}
+
+/**
+ * Formatea el rango de fechas del evento en lenguaje natural.
+ * Ejemplos:
+ *   - "Hoy y mañana"
+ *   - "Hoy · termina hoy"
+ *   - "En 3 días — 12 al 14 may"
+ *   - "Del 12 al 14 may 2026"
+ *   - "Terminó hace 2 días"
+ */
+function formatEventDateRange(startStr: string, endStr: string): string {
+  const start = new Date(startStr);
+  const end = new Date(endStr);
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const startDay = new Date(
+    start.getFullYear(),
+    start.getMonth(),
+    start.getDate(),
+  );
+  const endDay = new Date(end.getFullYear(), end.getMonth(), end.getDate());
+  const ms = 24 * 60 * 60 * 1000;
+  const daysToStart = Math.round((startDay.getTime() - today.getTime()) / ms);
+  const daysSinceEnd = Math.round((today.getTime() - endDay.getTime()) / ms);
+
+  const fmtDay = (d: Date) =>
+    d.toLocaleDateString('es-CO', { day: 'numeric', month: 'short' });
+  const sameDay = startDay.getTime() === endDay.getTime();
+  const sameYear = start.getFullYear() === end.getFullYear();
+
+  // Ya terminó
+  if (daysSinceEnd > 0) {
+    if (daysSinceEnd === 1) return 'Terminó ayer';
+    if (daysSinceEnd < 30) return `Terminó hace ${daysSinceEnd} días`;
+    return `Terminó el ${fmtDay(end)} ${end.getFullYear()}`;
+  }
+
+  // En curso
+  if (daysToStart <= 0 && daysSinceEnd <= 0) {
+    if (sameDay) return 'Hoy';
+    return `En curso · termina ${fmtDay(end)}`;
+  }
+
+  // Futuro
+  if (daysToStart === 1) {
+    return sameDay ? 'Mañana' : `Mañana — ${fmtDay(end)}`;
+  }
+  if (daysToStart <= 7) {
+    return sameDay
+      ? `En ${daysToStart} días`
+      : `En ${daysToStart} días — ${fmtDay(start)} al ${fmtDay(end)}`;
+  }
+  if (sameDay) {
+    return `${fmtDay(start)}${sameYear ? '' : ' ' + start.getFullYear()}`;
+  }
+  return `Del ${fmtDay(start)} al ${fmtDay(end)}${
+    sameYear ? ' ' + end.getFullYear() : ''
+  }`;
 }
 
 const styles = StyleSheet.create({
@@ -313,6 +443,38 @@ const styles = StyleSheet.create({
     color: colors.textSecondary,
     fontSize: fontSizes.sm,
     marginTop: spacing.xs,
+  },
+  eventDate: {
+    color: colors.cyan,
+    fontSize: fontSizes.xs,
+    fontWeight: fontWeights.semibold,
+    marginTop: 4,
+  },
+  sortRow: {
+    flexDirection: 'row',
+    gap: spacing.sm,
+    paddingHorizontal: spacing.lg,
+    paddingTop: spacing.md,
+  },
+  sortChip: {
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.xs,
+    borderRadius: radii.sm,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.bgInput,
+  },
+  sortChipActive: {
+    borderColor: colors.cyan,
+    backgroundColor: colors.bgCard,
+  },
+  sortChipText: {
+    color: colors.textMuted,
+    fontSize: fontSizes.xs,
+    fontWeight: fontWeights.semibold,
+  },
+  sortChipTextActive: {
+    color: colors.cyan,
   },
   eventStats: {
     flexDirection: 'row',

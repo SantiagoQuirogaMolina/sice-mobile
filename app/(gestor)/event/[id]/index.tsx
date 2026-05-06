@@ -133,6 +133,14 @@ export default function EventDetail() {
       ? Math.round((counts.delivered / counts.total) * 100)
       : 0;
 
+  // M1: gestor "completó" cuando ya no le quedan pendientes en la lista
+  // (Tipo A) o cuando el evento se cerró desde el backend.
+  const eventClosed =
+    event.status === 'completed' || event.status === 'archived';
+  const listFullyDelivered =
+    event.type === 'A' && counts.total > 0 && counts.pending === 0;
+  const isCompleted = eventClosed || listFullyDelivered;
+
   return (
     <Screen padding="none">
       <ScrollView
@@ -169,6 +177,20 @@ export default function EventDetail() {
             <Text style={styles.warningBody}>
               No puedes capturar todavía. Pide al coordinador que active el
               evento desde su panel.
+            </Text>
+          </View>
+        )}
+
+        {/* Banner completado — el gestor ya terminó (M1) */}
+        {!isDraft && isCompleted && (
+          <View style={styles.successBanner}>
+            <Text style={styles.successTitle}>
+              {eventClosed ? '✓ Evento cerrado' : '✓ Lista completada'}
+            </Text>
+            <Text style={styles.successBody}>
+              {eventClosed
+                ? 'El coordinador cerró este evento. Ya no puedes capturar nuevas entregas, pero puedes consultar tus registros.'
+                : 'Ya entregaste a todos los beneficiarios de tu lista. Si necesitas revisar algún registro, ábrelo desde la lista.'}
             </Text>
           </View>
         )}
@@ -231,6 +253,15 @@ export default function EventDetail() {
             <View style={styles.ctaBlocked}>
               <Text style={styles.ctaBlockedText}>Captura bloqueada (borrador)</Text>
             </View>
+          ) : isCompleted ? (
+            // M1: ya no se captura. CTA primario lleva a revisar registros.
+            <Button
+              label="Ver mis registros"
+              variant="primary"
+              onPress={() => {
+                router.push(`/event/${event.id}/beneficiaries` as never);
+              }}
+            />
           ) : (
             <Button
               label="Capturar entrega"
@@ -241,17 +272,21 @@ export default function EventDetail() {
               }}
             />
           )}
-          <View style={{ height: spacing.sm }} />
-          <Button
-            label="Ver lista de beneficiarios"
-            variant="secondary"
-            onPress={() => {
-              router.push(`/event/${event.id}/beneficiaries` as never);
-            }}
-          />
-          {/* Sprint 9.4 — Excepciones offline. Solo si el evento las permite y
-              no está draft (no se puede capturar de cualquier modo). */}
-          {!isDraft && event.allowExceptions && (
+          {!isCompleted && (
+            <>
+              <View style={{ height: spacing.sm }} />
+              <Button
+                label="Ver lista de beneficiarios"
+                variant="secondary"
+                onPress={() => {
+                  router.push(`/event/${event.id}/beneficiaries` as never);
+                }}
+              />
+            </>
+          )}
+          {/* Sprint 9.4 — Excepciones offline. Solo si el evento las permite,
+              no está draft y la lista no está completa. */}
+          {!isDraft && !isCompleted && event.allowExceptions && (
             <View style={{ marginTop: spacing.sm }}>
               <Button
                 label="+ Registrar excepción"
@@ -387,6 +422,27 @@ const styles = StyleSheet.create({
     letterSpacing: 0.5,
   },
   warningBody: {
+    color: colors.textPrimary,
+    fontSize: fontSizes.sm,
+    marginTop: spacing.xs,
+    lineHeight: 20,
+  },
+  successBanner: {
+    backgroundColor: colors.successBg,
+    borderLeftWidth: 4,
+    borderLeftColor: colors.success,
+    borderRadius: radii.md,
+    padding: spacing.md,
+    marginVertical: spacing.sm,
+  },
+  successTitle: {
+    color: colors.success,
+    fontSize: fontSizes.sm,
+    fontWeight: fontWeights.bold,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  successBody: {
     color: colors.textPrimary,
     fontSize: fontSizes.sm,
     marginTop: spacing.xs,
