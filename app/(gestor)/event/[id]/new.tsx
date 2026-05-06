@@ -164,11 +164,9 @@ export default function NewRegistrationForm() {
       return;
     }
 
-    // Tipo B: sector es opcional. Si lo seleccionó, lo usamos; si no, null.
-    const sectorMeta = sectorId
-      ? myAssignedSectors.find((s) => s.id === sectorId) ?? null
-      : null;
-
+    // Tipo B (asistencia/auto-registro): no requiere sector ni zona.
+    // El registro va sin tipoZona para que el backend NO valide
+    // address/vereda — el formulario no las pide.
     setSubmitting(true);
     setError(null);
     try {
@@ -183,9 +181,10 @@ export default function NewRegistrationForm() {
         // ad_hoc: sin justificación obligatoria
         justification: '',
         source: 'ad_hoc',
-        sectorId: sectorId ?? null,
-        sectorName: sectorMeta?.name ?? null,
-        zona: sectorMeta?.zona ?? null,
+        // Sin sector ni zona: Tipo B ad-hoc no las requiere
+        sectorId: null,
+        sectorName: null,
+        zona: null,
       });
       router.replace(
         `/event/${id}/delivery/${citizenLocalId}?fromNew=1` as never,
@@ -200,9 +199,20 @@ export default function NewRegistrationForm() {
     <Screen padding="none">
       <KeyboardAvoidingView
         style={{ flex: 1 }}
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        // 'padding' en ambas plataformas + paddingBottom grande en el
+        // ScrollView garantiza que cuando el teclado aparece, el contenido
+        // pueda scrollearse hacia arriba para que el input enfocado quede
+        // visible. SafeAreaView edges='bottom' no se reduce con el teclado,
+        // por eso necesitamos compensar manualmente con padding.
+        behavior="padding"
+        keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 24}
       >
-        <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
+        <ScrollView
+          contentContainerStyle={[styles.scroll, { paddingBottom: 320 }]}
+          keyboardShouldPersistTaps="handled"
+          keyboardDismissMode="on-drag"
+          showsVerticalScrollIndicator={false}
+        >
           <Pressable
             onPress={() => router.back()}
             style={({ pressed }) => [styles.back, pressed && { opacity: 0.7 }]}
@@ -223,51 +233,7 @@ export default function NewRegistrationForm() {
             </Text>
           </View>
 
-          {/* Sector — el backend lo exige para gestor/asistente */}
-          <Text style={styles.sectionLabel}>Sector</Text>
-          {myAssignedSectors.length === 1 ? (
-            <View style={styles.sectorAuto}>
-              <Text style={styles.sectorAutoLabel}>Asignado a tu sector</Text>
-              <Text style={styles.sectorAutoName}>
-                {myAssignedSectors[0].name}
-              </Text>
-              <Text style={styles.sectorAutoZona}>
-                {myAssignedSectors[0].zona === 'urbana' ? '🏙 Urbana' : '🌾 Rural'}
-              </Text>
-            </View>
-          ) : (
-            <View style={styles.sectorList}>
-              {myAssignedSectors.map((s) => (
-                <Pressable
-                  key={s.id}
-                  onPress={() => setSectorId(s.id)}
-                  style={({ pressed }) => [
-                    styles.sectorOption,
-                    sectorId === s.id && styles.sectorOptionActive,
-                    pressed && { opacity: 0.85 },
-                  ]}
-                >
-                  <View style={{ flex: 1 }}>
-                    <Text
-                      style={[
-                        styles.sectorOptionName,
-                        sectorId === s.id && { color: colors.cyan },
-                      ]}
-                    >
-                      {s.name}
-                    </Text>
-                    <Text style={styles.sectorOptionMeta}>
-                      {s.zona === 'urbana' ? '🏙 Urbana' : '🌾 Rural'} ·{' '}
-                      {s.beneficiaryCount} pre-cargados
-                    </Text>
-                  </View>
-                  {sectorId === s.id && (
-                    <Text style={styles.sectorOptionCheck}>✓</Text>
-                  )}
-                </Pressable>
-              ))}
-            </View>
-          )}
+          {/* Tipo B no requiere sector ni zona — el formulario es directo */}
 
           {/* Documento */}
           <Text style={styles.sectionLabel}>Documento</Text>

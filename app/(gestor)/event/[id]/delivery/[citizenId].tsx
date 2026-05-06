@@ -230,7 +230,8 @@ export default function DeliveryWizardScreen() {
     <Screen padding="none">
       <KeyboardAvoidingView
         style={{ flex: 1 }}
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        behavior="padding"
+        keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 24}
       >
         {step !== 'success' && (
           <View style={styles.header}>
