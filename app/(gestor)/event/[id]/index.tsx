@@ -262,12 +262,22 @@ export default function EventDetail() {
                 router.push(`/event/${event.id}/beneficiaries` as never);
               }}
             />
+          ) : event.type === 'B' ? (
+            // T1-T3 mobile: en Tipo B no hay lista pre-cargada — el copy
+            // debe ser "Añadir registro" y el flujo va directo al
+            // formulario de captura nuevo (no al search en lista).
+            <Button
+              label="Añadir registro"
+              variant="primary"
+              onPress={() => {
+                router.push(`/event/${event.id}/beneficiaries` as never);
+              }}
+            />
           ) : (
             <Button
               label="Capturar entrega"
               variant="primary"
               onPress={() => {
-                // Sprint 9.2: este botón abrirá la pantalla de búsqueda → wizard
                 router.push(`/event/${event.id}/beneficiaries` as never);
               }}
             />
@@ -276,7 +286,11 @@ export default function EventDetail() {
             <>
               <View style={{ height: spacing.sm }} />
               <Button
-                label="Ver lista de beneficiarios"
+                label={
+                  event.type === 'B'
+                    ? 'Ver lista de registros'
+                    : 'Ver lista de beneficiarios'
+                }
                 variant="secondary"
                 onPress={() => {
                   router.push(`/event/${event.id}/beneficiaries` as never);
