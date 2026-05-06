@@ -24,6 +24,7 @@ import {
   eventsService,
   type EventSummary,
 } from '../../../lib/api/services/events.service';
+import { listCachedEvents, saveCachedEvent } from '../../../lib/offline/db';
 import {
   colors,
   fontSizes,
@@ -44,6 +45,44 @@ export default function InicioTab() {
   const [error, setError] = useState<string | null>(null);
   const [sortMode, setSortMode] = useState<SortMode>('upcoming');
 
+  // Carga del cache local: instantánea y funciona sin red.
+  // Filtramos a estados utilizables igual que el flow online.
+  const loadFromCache = () => {
+    try {
+      const cached = listCachedEvents();
+      const usable = cached
+        .filter(
+          (e) =>
+            e.status === 'active' ||
+            e.status === 'paused' ||
+            e.status === 'draft',
+        )
+        .map<EventSummary>((c) => ({
+          id: c.id,
+          tenantId: c.tenantId,
+          name: c.name,
+          type: c.type,
+          status: c.status,
+          description: c.description,
+          startDate: c.startDate,
+          endDate: c.endDate,
+          departamento: c.departamento ?? '',
+          municipio: c.municipio ?? '',
+          allowExceptions: c.allowExceptions,
+          allowQrSelfRegister: c.allowQrSelfRegister,
+          totalBeneficiaries: c.totalBeneficiaries,
+          totalDelivered: c.totalDelivered,
+        }));
+      if (usable.length > 0) {
+        setEvents(usable);
+      }
+    } catch {
+      // si la BD local está corrupta, dejamos events vacío
+    }
+  };
+
+  // Refresh desde el backend. Solo se intenta si hay red; si falla
+  // mantenemos los datos del cache y mostramos un banner sutil.
   const load = async () => {
     setError(null);
     try {
@@ -53,11 +92,33 @@ export default function InicioTab() {
           e.status === 'active' || e.status === 'paused' || e.status === 'draft',
       );
       setEvents(usable);
+      // Persistimos al cache local para próxima apertura offline
+      for (const ev of usable) {
+        saveCachedEvent({
+          id: ev.id,
+          tenantId: ev.tenantId,
+          name: ev.name,
+          type: ev.type,
+          status: ev.status,
+          description: ev.description,
+          startDate: ev.startDate,
+          endDate: ev.endDate,
+          departamento: ev.departamento,
+          municipio: ev.municipio,
+          allowExceptions: ev.allowExceptions,
+          allowQrSelfRegister: ev.allowQrSelfRegister,
+          totalBeneficiaries: ev.totalBeneficiaries,
+          totalDelivered: ev.totalDelivered,
+          sectorsJson: null,
+          lastSyncAt: new Date().toISOString(),
+        });
+      }
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Error desconocido';
+      const isNetwork = msg.includes('NETWORK_ERROR') || msg.includes('Network');
       setError(
-        msg.includes('NETWORK_ERROR')
-          ? 'Sin conexión al servidor. Mostrando datos guardados.'
+        isNetwork
+          ? 'Modo offline · Mostrando eventos descargados'
           : msg,
       );
     } finally {
@@ -67,6 +128,10 @@ export default function InicioTab() {
   };
 
   useEffect(() => {
+    // 1. Cargar cache inmediatamente (sincrónico, sin red)
+    loadFromCache();
+    setLoading(false); // ya tenemos datos del cache, no bloqueamos UI
+    // 2. Intentar refresh del backend en background
     void load();
   }, []);
 

@@ -264,13 +264,13 @@ export default function EventDetail() {
             />
           ) : event.type === 'B' ? (
             // T1-T3 mobile: en Tipo B no hay lista pre-cargada — el copy
-            // debe ser "Añadir registro" y el flujo va directo al
-            // formulario de captura nuevo (no al search en lista).
+            // debe ser "Añadir registro" y el flujo va directo al formulario
+            // de captura ad-hoc (no a beneficiaries que es lista vacía).
             <Button
               label="Añadir registro"
               variant="primary"
               onPress={() => {
-                router.push(`/event/${event.id}/beneficiaries` as never);
+                router.push(`/event/${event.id}/new` as never);
               }}
             />
           ) : (

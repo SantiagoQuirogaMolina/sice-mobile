@@ -1105,7 +1105,17 @@ export function registerExceptionOffline(input: {
   sectorId?: string | null;
   sectorName?: string | null;
   zona?: ZonaType | null;
+  /** Justificación del registro:
+   *  - 'exception' (Tipo A) → REQUIRED, mínimo 20 chars (validado en UI)
+   *  - 'ad_hoc' (Tipo B / asistencia ad-hoc) → opcional/null
+   */
   justification: string;
+  /** Source del beneficiario.
+   *  - 'exception': captura excepcional fuera de la lista pre-cargada (Tipo A).
+   *  - 'ad_hoc': registro nuevo en evento Tipo B (sin lista previa).
+   *  Default 'exception' por compatibilidad con código previo.
+   */
+  source?: 'exception' | 'ad_hoc';
 }): { citizenLocalId: string; ebLocalId: string } {
   const db = getDB();
   const citizenLocalId = newOfflineId();
@@ -1147,19 +1157,21 @@ export function registerExceptionOffline(input: {
     );
 
     // 2) pending_event_beneficiary
+    const source = input.source ?? 'exception';
     db.runSync(
       `INSERT INTO pending_event_beneficiaries
          (local_id, event_id, citizen_local_id, citizen_server_id, sector_id,
           source, justification, sync_status, retry_count, last_error,
           next_attempt_at, last_attempt_at, server_id, created_at)
-       VALUES (?, ?, ?, NULL, ?, 'exception', ?, 'pending', 0, NULL, NULL,
+       VALUES (?, ?, ?, NULL, ?, ?, ?, 'pending', 0, NULL, NULL,
                NULL, NULL, ?)`,
       [
         ebLocalId,
         input.eventId,
         citizenLocalId,
         input.sectorId ?? null,
-        input.justification,
+        source,
+        source === 'ad_hoc' ? null : input.justification,
         now,
       ],
     );
