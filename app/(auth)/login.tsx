@@ -36,9 +36,17 @@ import {
  * Si la BD está en factory-reset, ninguno de estos credentials va
  * a funcionar (excepto platform admin desde la web).
  *
- * Mantener visibles también en builds release durante testing.
- * Antes del release a producción real: borrar este bloque o ponerlo
- * detrás de un flag de entorno.
+ * VISIBLES SIEMPRE (en dev y release builds) durante esta etapa.
+ * Es vital para loguear rápido en testing repetido.
+ *
+ * Antes del release a producción real con un cliente:
+ *   - Opción A (rápida): borrar el bloque <View style={styles.demoSection}> de abajo.
+ *   - Opción B (mejor): gatear con `Constants.expoConfig.extra.SHOW_DEMO_LOGIN`
+ *     leído desde app.json/eas.json, igual al patrón
+ *     `NEXT_PUBLIC_SHOW_DEMO_LOGIN` del web (ver
+ *     sice-frontend/app/auth/login/page.tsx).
+ *
+ * Documentado en sice-frontend/PLAN.md "Pre-flight checklist".
  */
 const DEMO_OPERATORS: Array<{
   email: string;
