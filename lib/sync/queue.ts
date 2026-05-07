@@ -120,6 +120,27 @@ export async function processSyncQueue(): Promise<BatchTotals> {
   }
   inFlight = true;
 
+  // Sprint 9.10: SIEMPRE emitir un batch-start y un batch-end aun si no
+  // hay nada pendiente o si algún stage lanza excepción. Antes la UI se
+  // quedaba en spinner infinito porque batch-start era condicional dentro
+  // de cada stage y batch-end solo si processed>0. Si processCitizens
+  // lanzaba excepción después de su batch-start, batch-end nunca se
+  // emitía y `syncing` quedaba true para siempre.
+  let totalQueued = 0;
+  try {
+    totalQueued =
+      listPendingCitizensByStatus('pending').length +
+      listPendingCitizensByStatus('error').length +
+      listPendingEbsByStatus('pending').length +
+      listPendingEbsByStatus('error').length +
+      listDeliveriesByStatus('pending').length +
+      listDeliveriesByStatus('error').length;
+  } catch {
+    /* si la BD falla, total=0; igual emitimos los eventos */
+  }
+  emit({ type: 'batch-start', total: totalQueued });
+
+  const totals: BatchTotals = { processed: 0, ok: 0, failed: 0, blocked: 0 };
   try {
     // 0) Recovery: items en 'syncing' por más de 60s → reset a pending
     const stuck = listDeliveriesByStatus('syncing');
@@ -132,28 +153,28 @@ export async function processSyncQueue(): Promise<BatchTotals> {
       }
     }
 
-    const totals: BatchTotals = { processed: 0, ok: 0, failed: 0, blocked: 0 };
-
     // 1) Sincronizar citizens pendientes ───────────────────────────────────
     await processCitizens(totals);
-
     // 2) Sincronizar event_beneficiaries que ya tienen citizen_server_id ───
     await processEbs(totals);
-
     // 3) Sincronizar deliveries ────────────────────────────────────────────
     await processDeliveries(totals);
 
-    if (totals.processed > 0) {
-      emit({
-        type: 'batch-end',
-        processed: totals.processed,
-        ok: totals.ok,
-        failed: totals.failed,
-        blocked: totals.blocked,
-      });
-    }
+    return totals;
+  } catch (err) {
+    // Cualquier excepción inesperada queda registrada en console pero NO
+    // bloquea: emitimos batch-end de todas formas para liberar la UI.
+    // eslint-disable-next-line no-console
+    console.log('[sync] processSyncQueue error:', err);
     return totals;
   } finally {
+    emit({
+      type: 'batch-end',
+      processed: totals.processed,
+      ok: totals.ok,
+      failed: totals.failed,
+      blocked: totals.blocked,
+    });
     inFlight = false;
   }
 }
@@ -167,8 +188,6 @@ async function processCitizens(totals: BatchTotals): Promise<void> {
   );
   const queue = [...pending, ...errors].slice(0, BATCH_SIZE);
   if (queue.length === 0) return;
-
-  if (totals.processed === 0) emit({ type: 'batch-start', total: queue.length });
 
   for (const c of queue) {
     updatePendingCitizenStatus(c.localId, 'syncing');
@@ -208,9 +227,6 @@ async function processEbs(totals: BatchTotals): Promise<void> {
   );
   const candidates = [...pending, ...errors].slice(0, BATCH_SIZE);
   if (candidates.length === 0) return;
-
-  if (totals.processed === 0)
-    emit({ type: 'batch-start', total: candidates.length });
 
   for (const eb of candidates) {
     // Resolver citizen_server_id si todavía está vacío
@@ -262,8 +278,6 @@ async function processDeliveries(totals: BatchTotals): Promise<void> {
   );
   const queue: PendingDelivery[] = [...pending, ...errors].slice(0, BATCH_SIZE);
   if (queue.length === 0) return;
-
-  if (totals.processed === 0) emit({ type: 'batch-start', total: queue.length });
 
   for (const item of queue) {
     // Si la delivery referencia un citizen local, debemos resolver el
