@@ -382,15 +382,23 @@ export function replaceBeneficiariesByEvent(
       if (row.has_local_delivery) localFlags.set(row.citizen_id, true);
     }
 
-    // 2. Borrar los que ya no están
+    // 2. Borrar los que ya no están — PERO preservar los que son
+    // pending_citizens locales (aún no sincronizados con backend).
+    // Sin esta defensa, refrescar la lista borraba los registros que
+    // el operador acababa de capturar offline (síntoma: 'al ingresar
+    // me eliminó los registros del evento').
     const newCitizenIds = new Set(items.map((b) => b.citizenId));
+    const pendingLocalIds = db
+      .getAllSync<{ local_id: string }>(`SELECT local_id FROM pending_citizens`)
+      .map((r) => r.local_id);
+    const pendingSet = new Set(pendingLocalIds);
     for (const row of existing) {
-      if (!newCitizenIds.has(row.citizen_id)) {
-        db.runSync(
-          `DELETE FROM cached_beneficiaries WHERE event_id = ? AND citizen_id = ?`,
-          [eventId, row.citizen_id],
-        );
-      }
+      if (newCitizenIds.has(row.citizen_id)) continue;
+      if (pendingSet.has(row.citizen_id)) continue; // todavía en cola, NO borrar
+      db.runSync(
+        `DELETE FROM cached_beneficiaries WHERE event_id = ? AND citizen_id = ?`,
+        [eventId, row.citizen_id],
+      );
     }
 
     // 3. Upsert los del set nuevo

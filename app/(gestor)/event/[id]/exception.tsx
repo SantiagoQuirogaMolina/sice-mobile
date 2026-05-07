@@ -41,6 +41,7 @@ import {
   type DocumentType,
 } from '../../../../lib/offline/db';
 import { useAuthStore } from '../../../../lib/stores/auth-store';
+import { processSyncQueue } from '../../../../lib/sync/queue';
 import {
   colors,
   fontSizes,
@@ -232,6 +233,8 @@ export default function ExceptionForm() {
         sectorName: sectorMeta?.name ?? null,
         zona: sectorMeta?.zona ?? null,
       });
+      // Sprint 9.10: dispara sync inmediato si hay red.
+      void processSyncQueue();
       // Saltamos directo al wizard con el citizen local. El usuario verá la
       // ficha pre-llenada con los datos que acaba de ingresar.
       router.replace(

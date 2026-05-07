@@ -40,6 +40,7 @@ import {
 } from '../../../../../lib/offline/db';
 import { useAuthStore } from '../../../../../lib/stores/auth-store';
 import { sha256OfDataUrl, sha256OfDelivery, shortHash } from '../../../../../lib/crypto/hash';
+import { processSyncQueue } from '../../../../../lib/sync/queue';
 import {
   colors,
   fontSizes,
@@ -219,6 +220,12 @@ export default function DeliveryWizardScreen() {
         syncedAt: null,
         serverId: null,
       });
+
+      // Sprint 9.10: auto-sync online. Disparamos el upload sin await
+      // para que la UI vaya a 'success' inmediatamente. Si hay red, el
+      // delivery sube de una; si no, queda pending y se subirá cuando el
+      // operador toque Sincronizar (o en un próximo arranque online).
+      void processSyncQueue();
 
       setStep('success');
     } finally {

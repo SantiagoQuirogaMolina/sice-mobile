@@ -41,6 +41,7 @@ import {
   type DocumentType,
 } from '../../../../lib/offline/db';
 import { useAuthStore } from '../../../../lib/stores/auth-store';
+import { processSyncQueue } from '../../../../lib/sync/queue';
 import {
   colors,
   fontSizes,
@@ -186,6 +187,9 @@ export default function NewRegistrationForm() {
         sectorName: null,
         zona: null,
       });
+      // Sprint 9.10: dispara sync inmediato. Si hay red, sube el citizen
+      // y el EB de una; si no, quedan pending y se mandan al sincronizar.
+      void processSyncQueue();
       router.replace(
         `/event/${id}/delivery/${citizenLocalId}?fromNew=1` as never,
       );
