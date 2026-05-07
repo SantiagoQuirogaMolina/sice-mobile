@@ -131,8 +131,10 @@ export async function processSyncQueue(): Promise<BatchTotals> {
     totalQueued =
       listPendingCitizensByStatus('pending').length +
       listPendingCitizensByStatus('error').length +
+      listPendingCitizensByStatus('blocked').length +
       listPendingEbsByStatus('pending').length +
       listPendingEbsByStatus('error').length +
+      listPendingEbsByStatus('blocked').length +
       listDeliveriesByStatus('pending').length +
       listDeliveriesByStatus('error').length;
   } catch {
@@ -186,7 +188,14 @@ async function processCitizens(totals: BatchTotals): Promise<void> {
   const errors = listPendingCitizensByStatus('error').filter((c) =>
     isReady(c.nextAttemptAt),
   );
-  const queue = [...pending, ...errors].slice(0, BATCH_SIZE);
+  // Sprint 9.10: incluir 'blocked' también. Antes los blocked nunca se
+  // reintentaban automáticamente — el operador veía el conflicto y la única
+  // opción era descartarlo. Pero muchos blocked vienen de 409 (citizen ya
+  // existe). Con el backend ahora idempotente, esos 409 se resuelven
+  // automáticamente. Reintentamos al usuario tap "Sincronizar" para
+  // limpiar la cola sin perder data.
+  const blocked = listPendingCitizensByStatus('blocked');
+  const queue = [...pending, ...errors, ...blocked].slice(0, BATCH_SIZE);
   if (queue.length === 0) return;
 
   for (const c of queue) {
@@ -225,7 +234,9 @@ async function processEbs(totals: BatchTotals): Promise<void> {
   const errors = listPendingEbsByStatus('error').filter((eb) =>
     isReady(eb.nextAttemptAt),
   );
-  const candidates = [...pending, ...errors].slice(0, BATCH_SIZE);
+  // Sprint 9.10: incluir 'blocked'. Mismo motivo que en processCitizens.
+  const blocked = listPendingEbsByStatus('blocked');
+  const candidates = [...pending, ...errors, ...blocked].slice(0, BATCH_SIZE);
   if (candidates.length === 0) return;
 
   for (const eb of candidates) {
