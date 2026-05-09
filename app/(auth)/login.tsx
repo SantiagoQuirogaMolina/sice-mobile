@@ -19,6 +19,7 @@ import {
 import { useRouter } from 'expo-router';
 import { Button } from '../../components/Button';
 import { Input } from '../../components/Input';
+import { SiceMark } from '../../components/SiceMark';
 import { useAuthStore } from '../../lib/stores/auth-store';
 import {
   colors,
@@ -115,8 +116,10 @@ export default function LoginScreen() {
       >
         <View style={styles.brand}>
           <View style={styles.logoMark}>
-            <Text style={styles.logoText}>SICE</Text>
+            <SiceMark size={56} color={colors.cyan} clipFill={colors.navyDark} />
           </View>
+          <Text style={styles.brandWord}>SICE</Text>
+          <Text style={styles.brandTag}>SISTEMA INTEGRAL DE CONTROL Y EVIDENCIA</Text>
           <Text style={styles.brandTitle}>Operador de campo</Text>
           <Text style={styles.brandSubtitle}>
             Captura entregas con firma, foto y GPS · funciona offline
@@ -230,16 +233,25 @@ const styles = StyleSheet.create({
     width: 64,
     height: 64,
     borderRadius: radii.lg,
-    backgroundColor: colors.cyan,
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: spacing.md,
+    marginBottom: spacing.sm,
   },
-  logoText: {
-    color: colors.navyDark,
-    fontSize: fontSizes.lg,
+  brandWord: {
+    color: colors.textPrimary,
+    fontSize: 32,
     fontWeight: fontWeights.extrabold,
-    letterSpacing: 1.5,
+    letterSpacing: -0.8, // Inter -0.025em equivalente a 32px
+    lineHeight: 32,
+    marginBottom: 4,
+  },
+  brandTag: {
+    color: colors.textMuted,
+    fontSize: 9.5,
+    fontWeight: fontWeights.medium,
+    letterSpacing: 1.7, // 0.18em a 9.5px
+    textTransform: 'uppercase',
+    marginBottom: spacing.md,
   },
   brandTitle: {
     color: colors.textPrimary,
