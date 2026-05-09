@@ -2,7 +2,7 @@
   "expo": {
     "name": "SICE Operador",
     "slug": "sice-operador",
-    "version": "1.1.0",
+    "version": "1.2.0",
     "orientation": "portrait",
     "userInterfaceStyle": "dark",
     "scheme": "sice",
@@ -12,7 +12,7 @@
     "owner": "santiquirogamolina",
     "android": {
       "package": "com.sice.operador",
-      "versionCode": 2,
+      "versionCode": 9,
       "permissions": [
         "android.permission.CAMERA",
         "android.permission.ACCESS_FINE_LOCATION",
