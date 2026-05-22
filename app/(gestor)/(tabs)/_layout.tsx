@@ -11,9 +11,10 @@
  */
 
 import { useEffect, useState } from 'react';
+import { AppState } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { Tabs } from 'expo-router';
-import { hasAnyPending, subscribeQueueEvents } from '../../../lib/sync/queue';
+import { hasAnyPending, processSyncQueue, subscribeQueueEvents } from '../../../lib/sync/queue';
 import {
   colors,
   fontSizes,
@@ -37,6 +38,18 @@ export default function TabsLayout() {
       unsub();
       clearInterval(id);
     };
+  }, []);
+
+  // Revisión profunda #4: auto-sync al montar (entrar a tabs ya autenticado) y
+  // al volver la app al foreground. Antes solo sincronizaba tras una captura o
+  // tap manual → las capturas hechas offline no subían al recuperar señal.
+  // El mutex interno de processSyncQueue evita solapamientos.
+  useEffect(() => {
+    void processSyncQueue();
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state === 'active') void processSyncQueue();
+    });
+    return () => sub.remove();
   }, []);
 
   return (

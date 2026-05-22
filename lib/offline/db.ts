@@ -10,6 +10,7 @@
  */
 
 import * as SQLite from 'expo-sqlite';
+import * as Crypto from 'expo-crypto';
 
 // Singleton de la conexión
 let dbInstance: SQLite.SQLiteDatabase | null = null;
@@ -797,11 +798,11 @@ function rowToDelivery(row: Record<string, unknown>): PendingDelivery {
 
 /** Genera un UUID v4. Lo usamos como id local de delivery (idempotency key). */
 export function newOfflineId(): string {
-  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
-    const r = (Math.random() * 16) | 0;
-    const v = c === 'x' ? r : (r & 0x3) | 0x8;
-    return v.toString(16);
-  });
+  // Revisión profunda #7: RNG criptográfico (expo-crypto), no Math.random.
+  // El id local es la clave de idempotencia; una colisión haría que el backend
+  // (findUnique por id) tratara una captura nueva como duplicada y la
+  // descartara en silencio. randomUUID es síncrono.
+  return Crypto.randomUUID();
 }
 
 /** Borra todo el cache de un evento (al hacer "Borrar caché del evento"). */
