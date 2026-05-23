@@ -180,39 +180,37 @@ export async function uploadDelivery(
   overrides: UploadDeliveryOverrides = {},
 ): Promise<SyncResult> {
   try {
-    // 1) Subir firma (si data URL — si ya es http URL, no re-sube)
-    if (!d.signatureDataUrl) {
-      return {
-        kind: 'error',
-        message: 'Firma incompleta (faltó dataUrl)',
-        retryable: false,
-      };
-    }
-    // Sprint 9.3.1: recomputamos siempre el SHA-256 a partir del dataUrl antes
-    // de subir. Esto auto-cura deliveries de versiones previas donde el hash
-    // se calculaba sobre la string base64 (no los bytes binarios). Costo:
-    // ~30ms por hash en mobile, despreciable.
-    const sigHash = d.signatureDataUrl.startsWith('data:')
-      ? await sha256OfDataUrl(d.signatureDataUrl)
-      : d.signatureSha256 ?? '';
-    const sig = d.signatureDataUrl.startsWith('data:')
-      ? await uploadEvidence('signature', d.signatureDataUrl, sigHash)
-      : { url: d.signatureDataUrl, sha256: sigHash };
+    // #2: firma y foto son OPCIONALES según los flags del evento. Si el wizard
+    // las omitió (requireSignature/requirePhoto = false) NO las exigimos acá.
+    // El backend hace el enforcement real: si el evento SÍ las requiere y
+    // faltan, responde 400 SIGNATURE/PHOTO_REQUIRED (no-retryable → blocked),
+    // que es el comportamiento correcto. Antes este transport las exigía
+    // siempre y habría dejado en 'blocked' toda captura de un evento que no
+    // pide firma/foto.
 
-    // 2) Subir foto
-    if (!d.photoDataUrl) {
-      return {
-        kind: 'error',
-        message: 'Foto incompleta',
-        retryable: false,
-      };
+    // 1) Subir firma si se capturó.
+    // Sprint 9.3.1: recomputamos el SHA-256 desde el dataUrl antes de subir
+    // (auto-cura hashes viejos calculados sobre la string base64, no los bytes).
+    let sig: { url: string; sha256: string } | null = null;
+    if (d.signatureDataUrl) {
+      const sigHash = d.signatureDataUrl.startsWith('data:')
+        ? await sha256OfDataUrl(d.signatureDataUrl)
+        : d.signatureSha256 ?? '';
+      sig = d.signatureDataUrl.startsWith('data:')
+        ? await uploadEvidence('signature', d.signatureDataUrl, sigHash)
+        : { url: d.signatureDataUrl, sha256: sigHash };
     }
-    const photoHash = d.photoDataUrl.startsWith('data:')
-      ? await sha256OfDataUrl(d.photoDataUrl)
-      : d.photoSha256 ?? '';
-    const photo = d.photoDataUrl.startsWith('data:')
-      ? await uploadEvidence('photo', d.photoDataUrl, photoHash)
-      : { url: d.photoDataUrl, sha256: photoHash };
+
+    // 2) Subir foto si se capturó.
+    let photo: { url: string; sha256: string } | null = null;
+    if (d.photoDataUrl) {
+      const photoHash = d.photoDataUrl.startsWith('data:')
+        ? await sha256OfDataUrl(d.photoDataUrl)
+        : d.photoSha256 ?? '';
+      photo = d.photoDataUrl.startsWith('data:')
+        ? await uploadEvidence('photo', d.photoDataUrl, photoHash)
+        : { url: d.photoDataUrl, sha256: photoHash };
+    }
 
     // 3) Crear el Delivery
     const citizenId = overrides.citizenServerId ?? d.citizenId;
@@ -223,10 +221,8 @@ export async function uploadDelivery(
         eventId: d.eventId,
         citizenId,
         capturedAt: d.capturedAt,
-        signatureUrl: sig.url,
-        signatureSha256: sig.sha256,
-        photoUrl: photo.url,
-        photoSha256: photo.sha256,
+        ...(sig ? { signatureUrl: sig.url, signatureSha256: sig.sha256 } : {}),
+        ...(photo ? { photoUrl: photo.url, photoSha256: photo.sha256 } : {}),
         gps: {
           lat: d.gpsLat,
           lon: d.gpsLon,

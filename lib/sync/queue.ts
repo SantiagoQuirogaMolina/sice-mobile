@@ -144,7 +144,12 @@ export async function processSyncQueue(): Promise<BatchTotals> {
 
   const totals: BatchTotals = { processed: 0, ok: 0, failed: 0, blocked: 0 };
   try {
-    // 0) Recovery: items en 'syncing' por más de 60s → reset a pending
+    // 0) Recovery: items en 'syncing' por más de 60s → reset a pending.
+    //    Pasa si la app muere a mitad de un upload (kill OS / swipe-close).
+    //    #9: extendido a las 3 tablas. Antes SOLO deliveries: un citizen o
+    //    EB que quedaba 'syncing' jamás se reintentaba (los stages solo toman
+    //    pending/error/blocked) → quedaba huérfano para siempre y bloqueaba la
+    //    cadena (la delivery offline espera el citizen_server_id).
     const stuck = listDeliveriesByStatus('syncing');
     for (const item of stuck) {
       const ts = item.lastAttemptAt
@@ -152,6 +157,20 @@ export async function processSyncQueue(): Promise<BatchTotals> {
         : 0;
       if (Date.now() - ts > STUCK_THRESHOLD_MS) {
         setDeliverySyncStatus(item.id, 'pending', { nextAttemptAt: null });
+      }
+    }
+    const stuckCitizens = listPendingCitizensByStatus('syncing');
+    for (const c of stuckCitizens) {
+      const ts = c.lastAttemptAt ? new Date(c.lastAttemptAt).getTime() : 0;
+      if (Date.now() - ts > STUCK_THRESHOLD_MS) {
+        updatePendingCitizenStatus(c.localId, 'pending', { nextAttemptAt: null });
+      }
+    }
+    const stuckEbs = listPendingEbsByStatus('syncing');
+    for (const eb of stuckEbs) {
+      const ts = eb.lastAttemptAt ? new Date(eb.lastAttemptAt).getTime() : 0;
+      if (Date.now() - ts > STUCK_THRESHOLD_MS) {
+        updatePendingEbStatus(eb.localId, 'pending', { nextAttemptAt: null });
       }
     }
 

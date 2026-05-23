@@ -17,6 +17,7 @@ import {
   View,
 } from 'react-native';
 import { useRouter } from 'expo-router';
+import Constants from 'expo-constants';
 import { Button } from '../../components/Button';
 import { Input } from '../../components/Input';
 import { SiceMark } from '../../components/SiceMark';
@@ -37,18 +38,21 @@ import {
  * Si la BD está en factory-reset, ninguno de estos credentials va
  * a funcionar (excepto platform admin desde la web).
  *
- * VISIBLES SIEMPRE (en dev y release builds) durante esta etapa.
- * Es vital para loguear rápido en testing repetido.
+ * GATEADO por config (Opción B, implementada): se muestran solo si
+ * `app.json → expo.extra.showDemoLogin === true`. Hoy está en `true` para
+ * loguear rápido durante el testing en builds release. Para el demo real con
+ * el cliente: poner `showDemoLogin: false` en app.json y rebuild — los chips
+ * (y las credenciales hardcodeadas) desaparecen sin tocar código.
  *
- * Antes del release a producción real con un cliente:
- *   - Opción A (rápida): borrar el bloque <View style={styles.demoSection}> de abajo.
- *   - Opción B (mejor): gatear con `Constants.expoConfig.extra.SHOW_DEMO_LOGIN`
- *     leído desde app.json/eas.json, igual al patrón
- *     `NEXT_PUBLIC_SHOW_DEMO_LOGIN` del web (ver
- *     sice-frontend/app/auth/login/page.tsx).
+ * No usamos `__DEV__` a propósito: dejaría sin chips la APK release que el
+ * usuario usa para probar en campo. El flag de config replica el patrón
+ * `NEXT_PUBLIC_SHOW_DEMO_LOGIN` del web y permite ambos escenarios.
  *
  * Documentado en sice-frontend/PLAN.md "Pre-flight checklist".
  */
+const SHOW_DEMO_LOGIN =
+  (Constants.expoConfig?.extra as { showDemoLogin?: boolean } | undefined)
+    ?.showDemoLogin === true;
 const DEMO_OPERATORS: Array<{
   email: string;
   label: string;
@@ -166,8 +170,8 @@ export default function LoginScreen() {
         </View>
 
         {/* Demo login chips — pre-llena email+pass de operadores seeded.
-            Visibles también en release durante testing. */}
-        {DEMO_OPERATORS.length > 0 && (
+            Gateado por app.json → extra.showDemoLogin (ver bloque arriba). */}
+        {SHOW_DEMO_LOGIN && DEMO_OPERATORS.length > 0 && (
           <View style={styles.demoSection}>
             <Text style={styles.demoTitle}>Acceso rápido (demo)</Text>
             <Text style={styles.demoSubtitle}>

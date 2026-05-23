@@ -26,6 +26,9 @@ export interface EventSummary {
   municipio: string;
   allowExceptions: boolean;
   allowQrSelfRegister: boolean;
+  requireSignature: boolean;
+  requirePhoto: boolean;
+  requireGps: boolean;
   totalBeneficiaries: number;
   totalDelivered: number;
 }
@@ -43,6 +46,9 @@ interface BackendEvent {
   municipio: string;
   allowExceptions: boolean;
   allowQrSelfRegister: boolean;
+  requireSignature?: boolean;
+  requirePhoto?: boolean;
+  requireGps?: boolean;
   totalBeneficiaries: number;
   totalDelivered: number;
 }
@@ -61,6 +67,10 @@ function mapEvent(b: BackendEvent): EventSummary {
     municipio: b.municipio,
     allowExceptions: b.allowExceptions,
     allowQrSelfRegister: b.allowQrSelfRegister,
+    // Default true si el backend no los envía (compat) → mismo default del schema.
+    requireSignature: b.requireSignature ?? true,
+    requirePhoto: b.requirePhoto ?? true,
+    requireGps: b.requireGps ?? true,
     totalBeneficiaries: b.totalBeneficiaries,
     totalDelivered: b.totalDelivered,
   };
@@ -144,6 +154,9 @@ function toCached(s: EventSummary, sectorsJson: string | null): CachedEvent {
     municipio: s.municipio,
     allowExceptions: s.allowExceptions,
     allowQrSelfRegister: s.allowQrSelfRegister,
+    requireSignature: s.requireSignature,
+    requirePhoto: s.requirePhoto,
+    requireGps: s.requireGps,
     totalBeneficiaries: s.totalBeneficiaries,
     totalDelivered: s.totalDelivered,
     sectorsJson,
@@ -165,6 +178,9 @@ function fromCached(c: CachedEvent): EventSummary {
     municipio: c.municipio ?? '',
     allowExceptions: c.allowExceptions,
     allowQrSelfRegister: c.allowQrSelfRegister,
+    requireSignature: c.requireSignature,
+    requirePhoto: c.requirePhoto,
+    requireGps: c.requireGps,
     totalBeneficiaries: c.totalBeneficiaries,
     totalDelivered: c.totalDelivered,
   };

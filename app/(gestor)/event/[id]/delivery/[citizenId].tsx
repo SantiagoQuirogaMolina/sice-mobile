@@ -13,7 +13,7 @@
  * está en estado delivered (cualquiera) → no entra al wizard.
  */
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Image,
@@ -34,6 +34,8 @@ import { Button } from '../../../../../components/Button';
 import {
   enqueueDelivery,
   findBeneficiaryByCitizen,
+  getCachedEvent,
+  isLocalCitizen,
   listDeliveriesByEvent,
   newOfflineId,
   type CachedBeneficiary,
@@ -95,10 +97,29 @@ export default function DeliveryWizardScreen() {
   const [draft, setDraft] = useState<DeliveryDraft>(emptyDraft);
   const [submitting, setSubmitting] = useState(false);
   const [composedHash, setComposedHash] = useState<string | null>(null);
+  // #1: ¿el ciudadano fue creado offline (id local)? Si sí, el hash compuesto
+  // local NO coincide con el del servidor (que usa el citizenId real asignado
+  // al sincronizar), así que no lo presentamos como verificable.
+  const [citizenIsLocal, setCitizenIsLocal] = useState(false);
+  // #2: requisitos de evidencia del evento. Default require-all (mismo default
+  // del backend) si el evento no está cacheado por algún motivo.
+  const [flags, setFlags] = useState({
+    requireSignature: true,
+    requirePhoto: true,
+    requireGps: true,
+  });
 
-  // Cargar beneficiario + check duplicado
+  // Cargar beneficiario + flags del evento + check duplicado
   useEffect(() => {
     if (!eventId || !citizenId) return;
+    const ev = getCachedEvent(eventId);
+    if (ev) {
+      setFlags({
+        requireSignature: ev.requireSignature,
+        requirePhoto: ev.requirePhoto,
+        requireGps: ev.requireGps,
+      });
+    }
     const b = findBeneficiaryByCitizen(eventId, citizenId);
     setBeneficiary(b);
     if (b) {
@@ -110,6 +131,26 @@ export default function DeliveryWizardScreen() {
       }
     }
   }, [eventId, citizenId]);
+
+  // #2: secuencia de pasos activos según los flags del evento. 'verify' y
+  // 'confirm' siempre están; firma/foto/GPS se incluyen solo si el evento los
+  // exige. La navegación es por índice sobre esta lista (no hardcodeada).
+  const navSteps = useMemo<Step[]>(
+    () => [
+      'verify',
+      ...(flags.requireSignature ? (['signature'] as Step[]) : []),
+      ...(flags.requirePhoto ? (['photo'] as Step[]) : []),
+      ...(flags.requireGps ? (['gps'] as Step[]) : []),
+      'confirm',
+    ],
+    [flags],
+  );
+
+  const goFrom = (current: Step, dir: 1 | -1): void => {
+    const idx = navSteps.indexOf(current);
+    const next = navSteps[idx + dir];
+    if (next) setStep(next);
+  };
 
   if (beneficiary === undefined) {
     return (
@@ -160,41 +201,35 @@ export default function DeliveryWizardScreen() {
     );
   }
 
-  const totalSteps = 5; // verify, signature, photo, gps, confirm
+  // #2: el total y el índice salen de la secuencia activa (no fijos en 5).
+  const totalSteps = navSteps.length;
   const stepIndex =
-    step === 'verify'
-      ? 0
-      : step === 'signature'
-        ? 1
-        : step === 'photo'
-          ? 2
-          : step === 'gps'
-            ? 3
-            : step === 'confirm'
-              ? 4
-              : 5;
+    step === 'success' ? totalSteps : Math.max(navSteps.indexOf(step), 0);
 
   const submit = async () => {
     if (!me?.id || !eventId) return;
-    if (
-      !draft.signatureDataUrl ||
-      !draft.signatureSha256 ||
-      !draft.photoDataUrl ||
-      !draft.photoSha256
-    ) {
+    // #2: exigir solo la evidencia que el evento requiere (alineado con el
+    // enforcement server-side en deliveries.create).
+    if (flags.requireSignature && (!draft.signatureDataUrl || !draft.signatureSha256)) {
+      return;
+    }
+    if (flags.requirePhoto && (!draft.photoDataUrl || !draft.photoSha256)) {
       return;
     }
     setSubmitting(true);
     try {
       const capturedAt = new Date().toISOString();
+      // Hash con '' para evidencia ausente — idéntico al composeHash del
+      // backend (que usa `?? ''`), así el hash compuesto coincide.
       const hash = await sha256OfDelivery({
         citizenId: beneficiary.citizenId,
         eventId,
         capturedAt,
-        signatureSha256: draft.signatureSha256,
-        photoSha256: draft.photoSha256,
+        signatureSha256: draft.signatureSha256 ?? '',
+        photoSha256: draft.photoSha256 ?? '',
       });
       setComposedHash(hash);
+      setCitizenIsLocal(isLocalCitizen(beneficiary.citizenId));
 
       enqueueDelivery({
         id: draft.offlineId,
@@ -275,13 +310,13 @@ export default function DeliveryWizardScreen() {
         {step === 'verify' && (
           <VerifyStep
             beneficiary={beneficiary}
-            onContinue={() => setStep('signature')}
+            onContinue={() => goFrom('verify', 1)}
           />
         )}
 
         {step === 'signature' && (
           <SignatureStep
-            onBack={() => setStep('verify')}
+            onBack={() => goFrom('signature', -1)}
             onContinue={async (dataUrl) => {
               const hash = await sha256OfDataUrl(dataUrl);
               setDraft((d) => ({
@@ -289,14 +324,14 @@ export default function DeliveryWizardScreen() {
                 signatureDataUrl: dataUrl,
                 signatureSha256: hash,
               }));
-              setStep('photo');
+              goFrom('signature', 1);
             }}
           />
         )}
 
         {step === 'photo' && (
           <PhotoStep
-            onBack={() => setStep('signature')}
+            onBack={() => goFrom('photo', -1)}
             onContinue={async (dataUrl, sizeKB) => {
               const hash = await sha256OfDataUrl(dataUrl);
               setDraft((d) => ({
@@ -305,14 +340,14 @@ export default function DeliveryWizardScreen() {
                 photoSha256: hash,
                 photoSizeKB: sizeKB,
               }));
-              setStep('gps');
+              goFrom('photo', 1);
             }}
           />
         )}
 
         {step === 'gps' && (
           <GpsStep
-            onBack={() => setStep('photo')}
+            onBack={() => goFrom('gps', -1)}
             onContinue={(coords) => {
               setDraft((d) => ({
                 ...d,
@@ -321,7 +356,7 @@ export default function DeliveryWizardScreen() {
                 gpsAccuracy: coords?.accuracy ?? null,
                 gpsStatus: coords ? 'ok' : 'indeterminada',
               }));
-              setStep('confirm');
+              goFrom('gps', 1);
             }}
           />
         )}
@@ -330,8 +365,9 @@ export default function DeliveryWizardScreen() {
           <ConfirmStep
             beneficiary={beneficiary}
             draft={draft}
+            requireGps={flags.requireGps}
             submitting={submitting}
-            onBack={() => setStep('gps')}
+            onBack={() => goFrom('confirm', -1)}
             onSubmit={() => void submit()}
           />
         )}
@@ -341,6 +377,7 @@ export default function DeliveryWizardScreen() {
             beneficiary={beneficiary}
             offlineId={draft.offlineId}
             composedHash={composedHash}
+            citizenIsLocal={citizenIsLocal}
             onBackToList={() => {
               // Pop el wizard del stack en vez de hacer replace.
               // replace dejaba un /beneficiaries duplicado por cada captura;
@@ -497,6 +534,7 @@ function PhotoStep({
   const [permission, requestPermission] = useCameraPermissions();
   const cameraRef = useRef<CameraView | null>(null);
   const [busy, setBusy] = useState(false);
+  const [photoError, setPhotoError] = useState<string | null>(null);
   const [preview, setPreview] = useState<{
     dataUrl: string;
     sizeKB: number;
@@ -528,17 +566,32 @@ function PhotoStep({
   const takePicture = async () => {
     if (!cameraRef.current || busy) return;
     setBusy(true);
+    setPhotoError(null);
     try {
       const pic = await cameraRef.current.takePictureAsync({
         quality: 0.6,
         base64: true,
         skipProcessing: false,
       });
+      // #3: la cámara puede devolver sin base64 (foto cancelada / buffer
+      // vacío) sin lanzar — lo tratamos como error recuperable, no en silencio.
       if (pic?.base64) {
         const dataUrl = `data:image/jpeg;base64,${pic.base64}`;
         const sizeKB = Math.round((pic.base64.length * 3) / 4 / 1024);
         setPreview({ dataUrl, sizeKB });
+      } else {
+        setPhotoError('No se capturó la imagen. Intenta de nuevo.');
       }
+    } catch (e) {
+      // #3: antes el catch no existía y un fallo de cámara (buffer ocupado,
+      // permiso revocado en caliente, OOM) se tragaba en silencio dejando al
+      // operador sin foto y sin saber por qué. Ahora mostramos el error y el
+      // botón permite reintentar.
+      setPhotoError(
+        e instanceof Error
+          ? `No se pudo tomar la foto: ${e.message}`
+          : 'No se pudo tomar la foto. Intenta de nuevo.',
+      );
     } finally {
       setBusy(false);
     }
@@ -583,8 +636,17 @@ function PhotoStep({
         <CameraView ref={cameraRef} style={styles.camera} facing="back" />
       </View>
 
+      {photoError && (
+        <View style={styles.photoErrorBox}>
+          <Text style={styles.photoErrorText}>{photoError}</Text>
+          <Text style={styles.photoErrorHint}>
+            Limpia el lente y vuelve a tocar “Tomar foto”.
+          </Text>
+        </View>
+      )}
+
       <Button
-        label={busy ? 'Capturando…' : '📸 Tomar foto'}
+        label={busy ? 'Capturando…' : photoError ? '📸 Reintentar foto' : '📸 Tomar foto'}
         onPress={() => void takePicture()}
         loading={busy}
       />
@@ -603,7 +665,7 @@ function GpsStep({
 }: {
   onBack: () => void;
   onContinue: (
-    coords: { lat: number; lon: number; accuracy: number } | null,
+    coords: { lat: number; lon: number; accuracy: number | null } | null,
   ) => void;
 }) {
   const [state, setState] = useState<
@@ -611,7 +673,7 @@ function GpsStep({
     | { kind: 'asking' }
     | { kind: 'denied' }
     | { kind: 'fetching' }
-    | { kind: 'ok'; lat: number; lon: number; accuracy: number }
+    | { kind: 'ok'; lat: number; lon: number; accuracy: number | null }
     | { kind: 'error'; msg: string }
   >({ kind: 'idle' });
 
@@ -631,7 +693,9 @@ function GpsStep({
         kind: 'ok',
         lat: pos.coords.latitude,
         lon: pos.coords.longitude,
-        accuracy: pos.coords.accuracy ?? 0,
+        // #8: NO forzar 0 cuando es desconocida (mostraría "±0m perfecto").
+        // null = "precisión desconocida"; el backend la acepta nullable.
+        accuracy: pos.coords.accuracy ?? null,
       });
     } catch (e) {
       setState({
@@ -672,7 +736,9 @@ function GpsStep({
               {state.lat.toFixed(6)}, {state.lon.toFixed(6)}
             </Text>
             <Text style={styles.gpsAcc}>
-              Precisión ±{Math.round(state.accuracy)}m
+              {state.accuracy != null
+                ? `Precisión ±${Math.round(state.accuracy)}m`
+                : 'Precisión desconocida'}
             </Text>
           </>
         )}
@@ -729,12 +795,14 @@ function GpsStep({
 function ConfirmStep({
   beneficiary,
   draft,
+  requireGps,
   submitting,
   onBack,
   onSubmit,
 }: {
   beneficiary: CachedBeneficiary;
   draft: DeliveryDraft;
+  requireGps: boolean;
   submitting: boolean;
   onBack: () => void;
   onSubmit: () => void;
@@ -754,36 +822,42 @@ function ConfirmStep({
           {beneficiary.documentType} {beneficiary.documentNumber}
         </Text>
 
-        <View style={styles.divider} />
-        <Text style={styles.confirmLabel}>Firma</Text>
+        {/* #2: secciones de evidencia condicionales — si el evento no exige
+            firma/foto, el paso se omite y no mostramos una sección vacía. */}
         {draft.signatureDataUrl && (
-          <View style={styles.confirmSig}>
-            <Image
-              source={{ uri: draft.signatureDataUrl }}
-              style={styles.confirmSigImg}
-              resizeMode="contain"
-            />
-          </View>
-        )}
-        {draft.signatureSha256 && (
-          <Text style={styles.hashText}>
-            SHA-256 {shortHash(draft.signatureSha256)}
-          </Text>
+          <>
+            <View style={styles.divider} />
+            <Text style={styles.confirmLabel}>Firma</Text>
+            <View style={styles.confirmSig}>
+              <Image
+                source={{ uri: draft.signatureDataUrl }}
+                style={styles.confirmSigImg}
+                resizeMode="contain"
+              />
+            </View>
+            {draft.signatureSha256 && (
+              <Text style={styles.hashText}>
+                SHA-256 {shortHash(draft.signatureSha256)}
+              </Text>
+            )}
+          </>
         )}
 
-        <View style={styles.divider} />
-        <Text style={styles.confirmLabel}>Foto del documento</Text>
         {draft.photoDataUrl && (
-          <Image
-            source={{ uri: draft.photoDataUrl }}
-            style={styles.confirmPhoto}
-            resizeMode="cover"
-          />
-        )}
-        {draft.photoSha256 && (
-          <Text style={styles.hashText}>
-            SHA-256 {shortHash(draft.photoSha256)} · {draft.photoSizeKB} KB
-          </Text>
+          <>
+            <View style={styles.divider} />
+            <Text style={styles.confirmLabel}>Foto del documento</Text>
+            <Image
+              source={{ uri: draft.photoDataUrl }}
+              style={styles.confirmPhoto}
+              resizeMode="cover"
+            />
+            {draft.photoSha256 && (
+              <Text style={styles.hashText}>
+                SHA-256 {shortHash(draft.photoSha256)} · {draft.photoSizeKB} KB
+              </Text>
+            )}
+          </>
         )}
 
         <View style={styles.divider} />
@@ -791,11 +865,15 @@ function ConfirmStep({
         <Text style={styles.confirmValue}>
           {draft.gpsStatus === 'ok' && draft.gpsLat != null
             ? `${draft.gpsLat.toFixed(6)}, ${draft.gpsLon?.toFixed(6)}`
-            : 'Indeterminada (sin permiso o señal débil)'}
+            : requireGps
+              ? 'Indeterminada (sin permiso o señal débil)'
+              : 'No requerido para este evento'}
         </Text>
-        {draft.gpsAccuracy != null && draft.gpsStatus === 'ok' && (
+        {draft.gpsStatus === 'ok' && (
           <Text style={styles.confirmDoc}>
-            Precisión ±{Math.round(draft.gpsAccuracy)}m
+            {draft.gpsAccuracy != null
+              ? `Precisión ±${Math.round(draft.gpsAccuracy)}m`
+              : 'Precisión desconocida'}
           </Text>
         )}
       </View>
@@ -824,12 +902,14 @@ function SuccessStep({
   beneficiary,
   offlineId,
   composedHash,
+  citizenIsLocal,
   onBackToList,
   onCaptureNext,
 }: {
   beneficiary: CachedBeneficiary;
   offlineId: string;
   composedHash: string;
+  citizenIsLocal: boolean;
   onBackToList: () => void;
   onCaptureNext: () => void;
 }) {
@@ -851,7 +931,14 @@ function SuccessStep({
         </Text>
         <View style={styles.divider} />
         <Text style={styles.successLabel}>Hash compuesto</Text>
-        <Text style={styles.successMono}>{shortHash(composedHash, 8, 6)}</Text>
+        {citizenIsLocal ? (
+          <Text style={styles.successPendingHash}>
+            Se generará al sincronizar (el ID definitivo del ciudadano se
+            asigna en el servidor).
+          </Text>
+        ) : (
+          <Text style={styles.successMono}>{shortHash(composedHash, 8, 6)}</Text>
+        )}
         <View style={styles.divider} />
         <Text style={styles.successLabel}>Estado</Text>
         <Text style={[styles.successMono, { color: colors.warning }]}>
@@ -1074,6 +1161,26 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginBottom: spacing.md,
   },
+  photoErrorBox: {
+    backgroundColor: colors.bgCard,
+    borderRadius: radii.md,
+    borderWidth: 1,
+    borderColor: colors.error,
+    padding: spacing.md,
+    marginBottom: spacing.md,
+  },
+  photoErrorText: {
+    color: colors.error,
+    fontSize: fontSizes.sm,
+    fontWeight: fontWeights.semibold,
+    textAlign: 'center',
+  },
+  photoErrorHint: {
+    color: colors.textSecondary,
+    fontSize: fontSizes.xs,
+    textAlign: 'center',
+    marginTop: spacing.xs,
+  },
   gpsCard: {
     backgroundColor: colors.bgCard,
     borderRadius: radii.lg,
@@ -1212,5 +1319,11 @@ const styles = StyleSheet.create({
     fontWeight: fontWeights.bold,
     fontVariant: ['tabular-nums'],
     marginTop: 4,
+  },
+  successPendingHash: {
+    color: colors.textSecondary,
+    fontSize: fontSizes.xs,
+    marginTop: 4,
+    lineHeight: 16,
   },
 });

@@ -56,6 +56,9 @@ function initSchema(db: SQLite.SQLiteDatabase): void {
       municipio TEXT,
       allow_exceptions INTEGER NOT NULL DEFAULT 0,
       allow_qr_self_register INTEGER NOT NULL DEFAULT 0,
+      require_signature INTEGER NOT NULL DEFAULT 1,
+      require_photo INTEGER NOT NULL DEFAULT 1,
+      require_gps INTEGER NOT NULL DEFAULT 1,
       total_beneficiaries INTEGER NOT NULL DEFAULT 0,
       total_delivered INTEGER NOT NULL DEFAULT 0,
       sectors_json TEXT,
@@ -178,6 +181,30 @@ function initSchema(db: SQLite.SQLiteDatabase): void {
     CREATE INDEX IF NOT EXISTS idx_pending_eb_citizen
       ON pending_event_beneficiaries(citizen_local_id);
   `);
+
+  // #2: migración ligera para installs existentes (la BD pudo crearse antes
+  // de que cached_events tuviera los flags de evidencia). PRAGMA-guarded →
+  // idempotente. Default 1 (require) = mismo default del backend → seguro.
+  addColumnIfMissing(db, 'cached_events', 'require_signature', 'INTEGER NOT NULL DEFAULT 1');
+  addColumnIfMissing(db, 'cached_events', 'require_photo', 'INTEGER NOT NULL DEFAULT 1');
+  addColumnIfMissing(db, 'cached_events', 'require_gps', 'INTEGER NOT NULL DEFAULT 1');
+}
+
+/**
+ * Agrega una columna a una tabla existente solo si falta (idempotente).
+ * expo-sqlite no soporta `ADD COLUMN IF NOT EXISTS`, así que consultamos
+ * PRAGMA table_info antes de hacer el ALTER.
+ */
+function addColumnIfMissing(
+  db: SQLite.SQLiteDatabase,
+  table: string,
+  column: string,
+  decl: string,
+): void {
+  const cols = db.getAllSync<{ name: string }>(`PRAGMA table_info(${table})`);
+  if (!cols.some((c) => c.name === column)) {
+    db.execSync(`ALTER TABLE ${table} ADD COLUMN ${column} ${decl}`);
+  }
 }
 
 /* ─────────────────────────── Tipos públicos ─────────────────────────── */
@@ -206,6 +233,9 @@ export interface CachedEvent {
   municipio: string | null;
   allowExceptions: boolean;
   allowQrSelfRegister: boolean;
+  requireSignature: boolean;
+  requirePhoto: boolean;
+  requireGps: boolean;
   totalBeneficiaries: number;
   totalDelivered: number;
   sectorsJson: string | null;
@@ -279,8 +309,9 @@ export function saveCachedEvent(event: CachedEvent): void {
     `INSERT OR REPLACE INTO cached_events
        (id, tenant_id, name, type, status, description, start_date, end_date,
         departamento, municipio, allow_exceptions, allow_qr_self_register,
+        require_signature, require_photo, require_gps,
         total_beneficiaries, total_delivered, sectors_json, last_sync_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       event.id,
       event.tenantId,
@@ -294,6 +325,9 @@ export function saveCachedEvent(event: CachedEvent): void {
       event.municipio,
       event.allowExceptions ? 1 : 0,
       event.allowQrSelfRegister ? 1 : 0,
+      event.requireSignature ? 1 : 0,
+      event.requirePhoto ? 1 : 0,
+      event.requireGps ? 1 : 0,
       event.totalBeneficiaries,
       event.totalDelivered,
       event.sectorsJson,
@@ -322,6 +356,9 @@ export function getCachedEvent(id: string): CachedEvent | null {
     municipio: (row.municipio as string | null) ?? null,
     allowExceptions: bool(row.allow_exceptions as number),
     allowQrSelfRegister: bool(row.allow_qr_self_register as number),
+    requireSignature: bool((row.require_signature as number | null) ?? 1),
+    requirePhoto: bool((row.require_photo as number | null) ?? 1),
+    requireGps: bool((row.require_gps as number | null) ?? 1),
     totalBeneficiaries: row.total_beneficiaries as number,
     totalDelivered: row.total_delivered as number,
     sectorsJson: (row.sectors_json as string | null) ?? null,
@@ -347,6 +384,9 @@ export function listCachedEvents(): CachedEvent[] {
     municipio: (row.municipio as string | null) ?? null,
     allowExceptions: bool(row.allow_exceptions as number),
     allowQrSelfRegister: bool(row.allow_qr_self_register as number),
+    requireSignature: bool((row.require_signature as number | null) ?? 1),
+    requirePhoto: bool((row.require_photo as number | null) ?? 1),
+    requireGps: bool((row.require_gps as number | null) ?? 1),
     totalBeneficiaries: row.total_beneficiaries as number,
     totalDelivered: row.total_delivered as number,
     sectorsJson: (row.sectors_json as string | null) ?? null,
