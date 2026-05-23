@@ -10,14 +10,12 @@ import { useEffect, useState } from 'react';
 import {
   KeyboardAvoidingView,
   Platform,
-  Pressable,
   ScrollView,
   StyleSheet,
   Text,
   View,
 } from 'react-native';
 import { useRouter } from 'expo-router';
-import Constants from 'expo-constants';
 import { Button } from '../../components/Button';
 import { Input } from '../../components/Input';
 import { SiceMark } from '../../components/SiceMark';
@@ -29,63 +27,6 @@ import {
   radii,
   spacing,
 } from '../../lib/theme/tokens';
-
-/**
- * DEMO_OPERATORS — auto-fill para operadores de campo seeded.
- *
- * Solo aparecen si el endpoint `/_diag/wipe-and-reseed` o
- * `/_diag/ensure-demo-users` se ha corrido contra la BD activa.
- * Si la BD está en factory-reset, ninguno de estos credentials va
- * a funcionar (excepto platform admin desde la web).
- *
- * GATEADO por config (Opción B, implementada): se muestran solo si
- * `app.json → expo.extra.showDemoLogin === true`. Hoy está en `true` para
- * loguear rápido durante el testing en builds release. Para el demo real con
- * el cliente: poner `showDemoLogin: false` en app.json y rebuild — los chips
- * (y las credenciales hardcodeadas) desaparecen sin tocar código.
- *
- * No usamos `__DEV__` a propósito: dejaría sin chips la APK release que el
- * usuario usa para probar en campo. El flag de config replica el patrón
- * `NEXT_PUBLIC_SHOW_DEMO_LOGIN` del web y permite ambos escenarios.
- *
- * Documentado en sice-frontend/PLAN.md "Pre-flight checklist".
- */
-const SHOW_DEMO_LOGIN =
-  (Constants.expoConfig?.extra as { showDemoLogin?: boolean } | undefined)
-    ?.showDemoLogin === true;
-const DEMO_OPERATORS: Array<{
-  email: string;
-  label: string;
-  sub: string;
-  initials: string;
-}> = [
-  {
-    email: 'gestor1@tunja.gov.co',
-    label: 'Gestor 1 · Tunja',
-    sub: 'Andrés Pulido',
-    initials: 'AP',
-  },
-  {
-    email: 'gestor2@tunja.gov.co',
-    label: 'Gestor 2 · Tunja',
-    sub: 'María Cárdenas',
-    initials: 'MC',
-  },
-  {
-    email: 'gestor1@combita.gov.co',
-    label: 'Gestor 1 · Cómbita',
-    sub: 'Jorge Buitrago',
-    initials: 'JB',
-  },
-  {
-    email: 'gestor2@combita.gov.co',
-    label: 'Gestor 2 · Cómbita',
-    sub: 'Patricia Vargas',
-    initials: 'PV',
-  },
-];
-
-const DEMO_PASSWORD = 'demo123';
 
 export default function LoginScreen() {
   const router = useRouter();
@@ -168,46 +109,6 @@ export default function LoginScreen() {
             />
           </View>
         </View>
-
-        {/* Demo login chips — pre-llena email+pass de operadores seeded.
-            Gateado por app.json → extra.showDemoLogin (ver bloque arriba). */}
-        {SHOW_DEMO_LOGIN && DEMO_OPERATORS.length > 0 && (
-          <View style={styles.demoSection}>
-            <Text style={styles.demoTitle}>Acceso rápido (demo)</Text>
-            <Text style={styles.demoSubtitle}>
-              Toca un operador para autollenar credenciales · contraseña{' '}
-              <Text style={styles.demoMono}>demo123</Text>
-            </Text>
-            <View style={styles.chipsWrap}>
-              {DEMO_OPERATORS.map((op) => (
-                <Pressable
-                  key={op.email}
-                  onPress={() => {
-                    setEmail(op.email);
-                    setPassword(DEMO_PASSWORD);
-                  }}
-                  disabled={isLoading}
-                  style={({ pressed }) => [
-                    styles.chip,
-                    pressed && { opacity: 0.7 },
-                  ]}
-                >
-                  <View style={styles.chipAvatar}>
-                    <Text style={styles.chipAvatarText}>{op.initials}</Text>
-                  </View>
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.chipLabel} numberOfLines={1}>
-                      {op.label}
-                    </Text>
-                    <Text style={styles.chipSub} numberOfLines={1}>
-                      {op.sub}
-                    </Text>
-                  </View>
-                </Pressable>
-              ))}
-            </View>
-          </View>
-        )}
 
         <Text style={styles.footer}>
           Si tu cuenta tiene 2FA o requiere cambio de contraseña, ingresa
@@ -294,63 +195,5 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginTop: spacing.xl,
     paddingHorizontal: spacing.lg,
-  },
-  demoSection: {
-    marginTop: spacing.xl,
-  },
-  demoTitle: {
-    color: colors.cyan,
-    fontSize: fontSizes.xs,
-    fontWeight: fontWeights.bold,
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-    textAlign: 'center',
-  },
-  demoSubtitle: {
-    color: colors.textMuted,
-    fontSize: fontSizes.xs,
-    textAlign: 'center',
-    marginTop: spacing.xs,
-    marginBottom: spacing.md,
-  },
-  demoMono: {
-    fontFamily: Platform.OS === 'android' ? 'monospace' : 'Menlo',
-    color: colors.cyan,
-  },
-  chipsWrap: {
-    gap: spacing.sm,
-  },
-  chip: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.md,
-    backgroundColor: colors.bgCard,
-    borderRadius: radii.md,
-    borderWidth: 1,
-    borderColor: colors.border,
-    padding: spacing.md,
-  },
-  chipAvatar: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: colors.cyanSoft,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  chipAvatarText: {
-    color: colors.cyan,
-    fontSize: fontSizes.xs,
-    fontWeight: fontWeights.bold,
-  },
-  chipLabel: {
-    color: colors.textPrimary,
-    fontSize: fontSizes.sm,
-    fontWeight: fontWeights.semibold,
-  },
-  chipSub: {
-    color: colors.textMuted,
-    fontSize: fontSizes.xs,
-    marginTop: 2,
   },
 });
