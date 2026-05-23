@@ -12,6 +12,7 @@
  */
 
 import { api, ApiError } from '../api/client';
+import { apiErrorMessage } from '../api/error-message';
 import { sha256OfDataUrl } from '../crypto/hash';
 import type {
   PendingCitizen,
@@ -58,33 +59,34 @@ async function uploadEvidence(
 
 function classify(err: unknown): SyncResult {
   if (err instanceof ApiError) {
-    // 409 — conflict por composedHash duplicado
+    // 409 — conflict por composedHash duplicado. Mensaje en español (sin
+    // exponer el texto crudo del backend); queda guardado en lastError.
     if (err.status === 409) {
       return {
         kind: 'conflict',
         serverId: '',
-        reason: err.message ?? 'Conflict reportado por backend',
+        reason: apiErrorMessage(err, 'Conflicto detectado por el servidor.'),
       };
     }
-    // 4xx (no 401/408/429) — error permanente, no reintentar
+    // 4xx (no 401/408/429) — error permanente, no reintentar.
     if (err.status >= 400 && err.status < 500 && err.status !== 408 && err.status !== 429) {
       return {
         kind: 'error',
-        message: `${err.code}: ${err.message}`,
+        message: apiErrorMessage(err),
         retryable: false,
       };
     }
-    // 5xx — server error, reintentar
+    // 5xx — server error, reintentar.
     return {
       kind: 'error',
-      message: `${err.code}: ${err.message}`,
+      message: apiErrorMessage(err),
       retryable: true,
     };
   }
-  // Network u otros — reintentar
+  // Network u otros — reintentar.
   return {
     kind: 'error',
-    message: err instanceof Error ? err.message : 'Error desconocido',
+    message: apiErrorMessage(err),
     retryable: true,
   };
 }

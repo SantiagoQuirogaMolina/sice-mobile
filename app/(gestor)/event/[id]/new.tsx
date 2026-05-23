@@ -41,6 +41,7 @@ import {
   type DocumentType,
 } from '../../../../lib/offline/db';
 import { useAuthStore } from '../../../../lib/stores/auth-store';
+import { apiErrorMessage } from '../../../../lib/api/error-message';
 import { processSyncQueue } from '../../../../lib/sync/queue';
 import {
   colors,
@@ -194,7 +195,7 @@ export default function NewRegistrationForm() {
         `/event/${id}/delivery/${citizenLocalId}?fromNew=1` as never,
       );
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Error al guardar');
+      setError(apiErrorMessage(e, 'No se pudo guardar el registro. Inténtalo de nuevo.'));
       setSubmitting(false);
     }
   };

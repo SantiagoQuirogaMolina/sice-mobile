@@ -41,6 +41,7 @@ import {
   type DocumentType,
 } from '../../../../lib/offline/db';
 import { useAuthStore } from '../../../../lib/stores/auth-store';
+import { apiErrorMessage } from '../../../../lib/api/error-message';
 import { processSyncQueue } from '../../../../lib/sync/queue';
 import {
   colors,
@@ -163,7 +164,7 @@ export default function ExceptionForm() {
           <Text style={styles.errorTitle}>Sin sectores asignados</Text>
           <Text style={styles.errorBody}>
             {loadSectorsError
-              ? `No se pudo cargar la lista de sectores: ${loadSectorsError}. Reintentá con red.`
+              ? 'No se pudo cargar la lista de sectores. Reintentá con red.'
               : 'No estás asignado como operador a ningún sector de este evento. Contactá al coordinador para que te asigne y volvé a intentar.'}
           </Text>
           <View style={{ marginTop: spacing.lg, alignSelf: 'stretch' }}>
@@ -241,7 +242,7 @@ export default function ExceptionForm() {
         `/event/${id}/delivery/${citizenLocalId}?fromException=1` as never,
       );
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Error al guardar');
+      setError(apiErrorMessage(e, 'No se pudo guardar la excepción. Inténtalo de nuevo.'));
       setSubmitting(false);
     }
   };

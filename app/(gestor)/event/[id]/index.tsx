@@ -33,6 +33,7 @@ import {
   type EventSummary,
 } from '../../../../lib/api/services/events.service';
 import { beneficiariesService } from '../../../../lib/api/services/beneficiaries.service';
+import { apiErrorMessage } from '../../../../lib/api/error-message';
 import { getEventCounts, type EventCounts } from '../../../../lib/offline/db';
 import {
   colors,
@@ -75,9 +76,10 @@ export default function EventDetail() {
         setBannerError(null);
       } catch (e) {
         setBannerError(
-          e instanceof Error
-            ? `Beneficiarios: ${e.message}`
-            : 'No se pudo refrescar la lista',
+          apiErrorMessage(
+            e,
+            'No se pudo actualizar la lista. Mostrando datos guardados.',
+          ),
         );
       }
 

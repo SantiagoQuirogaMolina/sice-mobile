@@ -21,7 +21,6 @@ import Constants from 'expo-constants';
 import { Screen } from '../../../components/Screen';
 import { Button } from '../../../components/Button';
 import { useAuthStore } from '../../../lib/stores/auth-store';
-import { API_URL } from '../../../lib/api/client';
 import {
   colors,
   fontSizes,
@@ -77,15 +76,6 @@ export default function YoTab() {
 
   const appVersion =
     Constants.expoConfig?.version ?? '1.0.0';
-  const buildNumber =
-    Constants.expoConfig?.android?.versionCode ?? 1;
-  const apiHost = (() => {
-    try {
-      return new URL(API_URL).host;
-    } catch {
-      return API_URL;
-    }
-  })();
 
   return (
     <Screen padding="none">
@@ -114,20 +104,16 @@ export default function YoTab() {
             label="Entidad"
             value={user?.tenant?.name ?? '—'}
           />
-          {user?.tenant?.slug && (
-            <InfoRow label="Slug" value={user.tenant.slug} mono />
-          )}
+          {/* No exponemos el slug del tenant (identificador interno multi-tenant):
+              el operador no lo necesita y el nombre de la entidad ya es suficiente. */}
         </View>
 
-        {/* Info técnica de la app */}
+        {/* Versión de la app (útil para soporte). NO exponemos la URL del
+            backend (infraestructura) ni el build interno — el usuario final no
+            los necesita y revelan detalles técnicos del sistema. */}
         <Text style={styles.sectionTitle}>Aplicación</Text>
         <View style={styles.infoCard}>
-          <InfoRow
-            label="Versión"
-            value={`${appVersion} (build ${buildNumber})`}
-            mono
-          />
-          <InfoRow label="Backend" value={apiHost} mono />
+          <InfoRow label="Versión" value={appVersion} mono />
         </View>
 
         {/* Logout */}

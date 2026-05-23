@@ -20,6 +20,8 @@ import { useRouter } from 'expo-router';
 import { Screen } from '../../../components/Screen';
 import { Button } from '../../../components/Button';
 import { useAuthStore } from '../../../lib/stores/auth-store';
+import { ApiError } from '../../../lib/api/client';
+import { apiErrorMessage } from '../../../lib/api/error-message';
 import {
   eventsService,
   type EventSummary,
@@ -120,12 +122,11 @@ export default function InicioTab() {
         });
       }
     } catch (e) {
-      const msg = e instanceof Error ? e.message : 'Error desconocido';
-      const isNetwork = msg.includes('NETWORK_ERROR') || msg.includes('Network');
+      const isNetwork = e instanceof ApiError && e.code === 'NETWORK_ERROR';
       setError(
         isNetwork
           ? 'Modo offline · Mostrando eventos descargados'
-          : msg,
+          : apiErrorMessage(e, 'No se pudieron cargar tus eventos. Reintenta.'),
       );
     } finally {
       setLoading(false);
