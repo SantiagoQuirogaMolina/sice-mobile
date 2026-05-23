@@ -3,7 +3,10 @@ node_modules/
 dist/
 web-build/
 
-# Native
+# Native (CNG: android/ e ios/ se regeneran desde app.json con `expo prebuild`,
+# por eso NO se versionan — la fuente de verdad es app.json + plugins).
+/android
+/ios
 *.orig.*
 *.jks
 *.p8
