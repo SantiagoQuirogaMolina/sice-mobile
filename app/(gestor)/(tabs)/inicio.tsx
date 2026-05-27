@@ -25,6 +25,7 @@ import { apiErrorMessage } from '../../../lib/api/error-message';
 import {
   eventsService,
   type EventSummary,
+  type GestorFormField,
 } from '../../../lib/api/services/events.service';
 import { listCachedEvents, saveCachedEvent } from '../../../lib/offline/db';
 import {
@@ -36,6 +37,17 @@ import {
 } from '../../../lib/theme/tokens';
 
 type SortMode = 'upcoming' | 'recent';
+
+/** Parsea el JSON cacheado de campos del formulario; vacío si falta o corrupto. */
+function parseCachedFormFields(json: string | null): GestorFormField[] {
+  if (!json) return [];
+  try {
+    const parsed = JSON.parse(json) as GestorFormField[];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
 
 export default function InicioTab() {
   const router = useRouter();
@@ -77,6 +89,7 @@ export default function InicioTab() {
           requireGps: c.requireGps,
           totalBeneficiaries: c.totalBeneficiaries,
           totalDelivered: c.totalDelivered,
+          customFormFields: parseCachedFormFields(c.customFormFieldsJson),
         }));
       if (usable.length > 0) {
         setEvents(usable);
@@ -118,6 +131,10 @@ export default function InicioTab() {
           totalBeneficiaries: ev.totalBeneficiaries,
           totalDelivered: ev.totalDelivered,
           sectorsJson: null,
+          customFormFieldsJson:
+            ev.customFormFields.length > 0
+              ? JSON.stringify(ev.customFormFields)
+              : null,
           lastSyncAt: new Date().toISOString(),
         });
       }

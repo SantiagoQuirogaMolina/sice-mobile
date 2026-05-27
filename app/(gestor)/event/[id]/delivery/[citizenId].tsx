@@ -31,6 +31,7 @@ import * as Location from 'expo-location';
 import SignatureScreen from 'react-native-signature-canvas';
 import { Screen } from '../../../../../components/Screen';
 import { Button } from '../../../../../components/Button';
+import { DynamicFormStep } from '../../../../../components/DynamicFormStep';
 import {
   enqueueDelivery,
   findBeneficiaryByCitizen,
@@ -40,6 +41,10 @@ import {
   newOfflineId,
   type CachedBeneficiary,
 } from '../../../../../lib/offline/db';
+import {
+  eventsService,
+  type GestorFormField,
+} from '../../../../../lib/api/services/events.service';
 import { useAuthStore } from '../../../../../lib/stores/auth-store';
 import { sha256OfDataUrl, sha256OfDelivery, shortHash } from '../../../../../lib/crypto/hash';
 import { processSyncQueue } from '../../../../../lib/sync/queue';
@@ -52,10 +57,18 @@ import {
   TOUCH_MIN,
 } from '../../../../../lib/theme/tokens';
 
-type Step = 'verify' | 'signature' | 'photo' | 'gps' | 'confirm' | 'success';
+type Step =
+  | 'verify'
+  | 'data'
+  | 'signature'
+  | 'photo'
+  | 'gps'
+  | 'confirm'
+  | 'success';
 
 interface DeliveryDraft {
   offlineId: string;
+  customFormData: Record<string, unknown>;
   signatureDataUrl: string | null;
   signatureSha256: string | null;
   photoDataUrl: string | null;
@@ -70,6 +83,7 @@ interface DeliveryDraft {
 function emptyDraft(): DeliveryDraft {
   return {
     offlineId: newOfflineId(),
+    customFormData: {},
     signatureDataUrl: null,
     signatureSha256: null,
     photoDataUrl: null,
@@ -108,6 +122,12 @@ export default function DeliveryWizardScreen() {
     requirePhoto: true,
     requireGps: true,
   });
+  // Tipo de evento + campos del formulario dinámico (Tipo B). El paso 'data'
+  // solo aparece cuando el evento es B y tiene campos configurados.
+  const [eventType, setEventType] = useState<'A' | 'B'>('A');
+  const [customFormFields, setCustomFormFields] = useState<GestorFormField[]>(
+    [],
+  );
 
   // Cargar beneficiario + flags del evento + check duplicado
   useEffect(() => {
@@ -119,6 +139,7 @@ export default function DeliveryWizardScreen() {
         requirePhoto: ev.requirePhoto,
         requireGps: ev.requireGps,
       });
+      setEventType(ev.type);
     }
     const b = findBeneficiaryByCitizen(eventId, citizenId);
     setBeneficiary(b);
@@ -132,18 +153,40 @@ export default function DeliveryWizardScreen() {
     }
   }, [eventId, citizenId]);
 
+  // Cargar los campos del formulario dinámico (offline-first: getById lee del
+  // cache si no hay red, donde quedaron persistidos al descargar el evento).
+  // El paso 'data' los necesita; en Tipo A queda vacío y el paso no aparece.
+  useEffect(() => {
+    if (!eventId) return;
+    let alive = true;
+    void eventsService.getById(eventId).then((ev) => {
+      if (alive && ev) {
+        setEventType(ev.type);
+        setCustomFormFields(ev.customFormFields);
+      }
+    });
+    return () => {
+      alive = false;
+    };
+  }, [eventId]);
+
   // #2: secuencia de pasos activos según los flags del evento. 'verify' y
   // 'confirm' siempre están; firma/foto/GPS se incluyen solo si el evento los
   // exige. La navegación es por índice sobre esta lista (no hardcodeada).
   const navSteps = useMemo<Step[]>(
     () => [
       'verify',
+      // Paso 'data' (formulario dinámico) solo en Tipo B con campos definidos:
+      // así el operador captura lo mismo que pide el auto-registro QR.
+      ...(eventType === 'B' && customFormFields.length > 0
+        ? (['data'] as Step[])
+        : []),
       ...(flags.requireSignature ? (['signature'] as Step[]) : []),
       ...(flags.requirePhoto ? (['photo'] as Step[]) : []),
       ...(flags.requireGps ? (['gps'] as Step[]) : []),
       'confirm',
     ],
-    [flags],
+    [flags, eventType, customFormFields],
   );
 
   const goFrom = (current: Step, dir: 1 | -1): void => {
@@ -245,7 +288,12 @@ export default function DeliveryWizardScreen() {
         gpsLon: draft.gpsLon,
         gpsAccuracy: draft.gpsAccuracy,
         gpsStatus: draft.gpsStatus,
-        customFormData: null,
+        // Tipo B: valores del formulario dinámico capturados en el paso 'data'.
+        // null cuando no hay formulario (Tipo A o sin campos), igual que antes.
+        customFormData:
+          Object.keys(draft.customFormData).length > 0
+            ? draft.customFormData
+            : null,
         syncStatus: 'pending',
         retryCount: 0,
         nextAttemptAt: null,
@@ -311,6 +359,24 @@ export default function DeliveryWizardScreen() {
           <VerifyStep
             beneficiary={beneficiary}
             onContinue={() => goFrom('verify', 1)}
+          />
+        )}
+
+        {step === 'data' && (
+          <DynamicFormStep
+            fields={customFormFields}
+            beneficiary={{
+              documentType: beneficiary.documentType,
+              documentNumber: beneficiary.documentNumber,
+              fullName: beneficiary.fullName,
+            }}
+            initial={draft.customFormData}
+            stepIndex={stepIndex}
+            total={totalSteps}
+            onContinue={(vals) => {
+              setDraft((d) => ({ ...d, customFormData: vals }));
+              goFrom('data', 1);
+            }}
           />
         )}
 

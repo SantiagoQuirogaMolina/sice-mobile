@@ -57,6 +57,56 @@ async function uploadEvidence(
   return { url: res.url, sha256: res.sha256 };
 }
 
+/**
+ * Sube los archivos del formulario dinámico (campos foto/documento que el
+ * operador capturó como Data URL dentro de customFormData) y los reemplaza por
+ * la referencia { kind, url, sha256, filename, mime }. Espejo del
+ * `uploadCustomFormFiles` de la web (lib/sync/real-transport.ts). Idempotente
+ * por SHA-256. Texto/select/checkbox/GPS quedan intactos, así el POST a
+ * /deliveries no lleva base64 gigante y los archivos van a EvidenceStorage.
+ */
+async function uploadCustomFormFiles(
+  customFormData: Record<string, unknown> | null | undefined,
+): Promise<Record<string, unknown> | null | undefined> {
+  if (!customFormData) return customFormData;
+  const out: Record<string, unknown> = { ...customFormData };
+  for (const [key, val] of Object.entries(customFormData)) {
+    const items = Array.isArray(val) ? val : [val];
+    let touched = false;
+    const processed: unknown[] = [];
+    for (const item of items) {
+      const piece = item as {
+        kind?: string;
+        dataUrl?: string;
+        sha256?: string;
+        filename?: string;
+        mime?: string;
+      };
+      if (
+        (piece?.kind === 'photo' || piece?.kind === 'file') &&
+        typeof piece.dataUrl === 'string' &&
+        piece.dataUrl.startsWith('data:') &&
+        piece.sha256
+      ) {
+        touched = true;
+        // 'photo' es cosmético en el storage; la extensión sale del mime.
+        const res = await uploadEvidence('photo', piece.dataUrl, piece.sha256);
+        processed.push({
+          kind: piece.kind,
+          url: res.url,
+          sha256: res.sha256,
+          filename: piece.filename ?? 'archivo',
+          mime: piece.mime ?? 'application/octet-stream',
+        });
+      } else {
+        processed.push(item);
+      }
+    }
+    if (touched) out[key] = Array.isArray(val) ? processed : processed[0];
+  }
+  return out;
+}
+
 function classify(err: unknown): SyncResult {
   if (err instanceof ApiError) {
     // 409 — conflict por composedHash duplicado. Mensaje en español (sin
@@ -214,7 +264,12 @@ export async function uploadDelivery(
         : { url: d.photoDataUrl, sha256: photoHash };
     }
 
-    // 3) Crear el Delivery
+    // 3) Subir los archivos del formulario dinámico (foto/documento) y dejar
+    //    solo las referencias en customFormData (no base64). Texto/GPS/etc.
+    //    quedan intactos.
+    const cleanedForm = await uploadCustomFormFiles(d.customFormData);
+
+    // 4) Crear el Delivery
     const citizenId = overrides.citizenServerId ?? d.citizenId;
     const res = await api.post<BackendDeliveryResponse>(
       '/api/v1/deliveries',
@@ -231,7 +286,7 @@ export async function uploadDelivery(
           accuracy: d.gpsAccuracy,
           status: d.gpsStatus,
         },
-        customFormData: d.customFormData,
+        customFormData: cleanedForm,
       },
     );
     return { kind: 'ok', serverId: res.id };

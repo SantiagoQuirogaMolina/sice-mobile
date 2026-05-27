@@ -62,6 +62,7 @@ function initSchema(db: SQLite.SQLiteDatabase): void {
       total_beneficiaries INTEGER NOT NULL DEFAULT 0,
       total_delivered INTEGER NOT NULL DEFAULT 0,
       sectors_json TEXT,
+      custom_form_fields_json TEXT,
       last_sync_at TEXT
     );
 
@@ -188,6 +189,11 @@ function initSchema(db: SQLite.SQLiteDatabase): void {
   addColumnIfMissing(db, 'cached_events', 'require_signature', 'INTEGER NOT NULL DEFAULT 1');
   addColumnIfMissing(db, 'cached_events', 'require_photo', 'INTEGER NOT NULL DEFAULT 1');
   addColumnIfMissing(db, 'cached_events', 'require_gps', 'INTEGER NOT NULL DEFAULT 1');
+
+  // Formulario dinámico (Tipo B): los campos que el coordinador armó en la web.
+  // Migración para installs que cachearon el evento antes de esta columna.
+  // Nullable (sin default) → installs viejos quedan con NULL = sin form.
+  addColumnIfMissing(db, 'cached_events', 'custom_form_fields_json', 'TEXT');
 }
 
 /**
@@ -239,6 +245,7 @@ export interface CachedEvent {
   totalBeneficiaries: number;
   totalDelivered: number;
   sectorsJson: string | null;
+  customFormFieldsJson: string | null;
   lastSyncAt: string | null;
 }
 
@@ -310,8 +317,9 @@ export function saveCachedEvent(event: CachedEvent): void {
        (id, tenant_id, name, type, status, description, start_date, end_date,
         departamento, municipio, allow_exceptions, allow_qr_self_register,
         require_signature, require_photo, require_gps,
-        total_beneficiaries, total_delivered, sectors_json, last_sync_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        total_beneficiaries, total_delivered, sectors_json,
+        custom_form_fields_json, last_sync_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       event.id,
       event.tenantId,
@@ -331,6 +339,7 @@ export function saveCachedEvent(event: CachedEvent): void {
       event.totalBeneficiaries,
       event.totalDelivered,
       event.sectorsJson,
+      event.customFormFieldsJson,
       event.lastSyncAt,
     ],
   );
@@ -362,6 +371,7 @@ export function getCachedEvent(id: string): CachedEvent | null {
     totalBeneficiaries: row.total_beneficiaries as number,
     totalDelivered: row.total_delivered as number,
     sectorsJson: (row.sectors_json as string | null) ?? null,
+    customFormFieldsJson: (row.custom_form_fields_json as string | null) ?? null,
     lastSyncAt: (row.last_sync_at as string | null) ?? null,
   };
 }
@@ -390,6 +400,7 @@ export function listCachedEvents(): CachedEvent[] {
     totalBeneficiaries: row.total_beneficiaries as number,
     totalDelivered: row.total_delivered as number,
     sectorsJson: (row.sectors_json as string | null) ?? null,
+    customFormFieldsJson: (row.custom_form_fields_json as string | null) ?? null,
     lastSyncAt: (row.last_sync_at as string | null) ?? null,
   }));
 }

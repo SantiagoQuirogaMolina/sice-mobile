@@ -13,6 +13,53 @@ import {
   type CachedEvent,
 } from '../../offline/db';
 
+/**
+ * Campo del formulario dinámico del evento (Tipo B). Mismo shape que la web
+ * (`FormField` del form-builder), pero sin las props de edición del builder.
+ * El coordinador lo arma en la web y se guarda en `Event.customForm.fields`.
+ * En mobile lo renderiza `DynamicFormStep` durante la captura.
+ */
+export interface GestorFormField {
+  id: string;
+  type:
+    | 'text'
+    | 'textarea'
+    | 'number'
+    | 'date'
+    | 'select'
+    | 'radio'
+    | 'checkbox'
+    | 'phone'
+    | 'photo'
+    | 'gps'
+    | 'file';
+  label: string;
+  name: string;
+  required: boolean;
+  placeholder?: string;
+  helper?: string;
+  options?: string[];
+  multiple?: boolean;
+  accept?: string;
+  validation?: string;
+}
+
+/** Tipos válidos del campo — el backend puede traer algo fuera de la unión
+ *  (schema viejo), en cuyo caso coercionamos a 'text'. */
+const FORM_FIELD_TYPES: readonly GestorFormField['type'][] = [
+  'text',
+  'textarea',
+  'number',
+  'date',
+  'select',
+  'radio',
+  'checkbox',
+  'phone',
+  'photo',
+  'gps',
+  'file',
+];
+
 export interface EventSummary {
   id: string;
   tenantId: string;
@@ -31,6 +78,22 @@ export interface EventSummary {
   requireGps: boolean;
   totalBeneficiaries: number;
   totalDelivered: number;
+  /** Campos del formulario dinámico (Tipo B). Vacío en Tipo A o sin form. */
+  customFormFields: GestorFormField[];
+}
+
+interface BackendFormField {
+  id: string;
+  type: string;
+  label: string;
+  name: string;
+  required: boolean;
+  placeholder?: string;
+  helper?: string;
+  options?: string[];
+  multiple?: boolean;
+  accept?: string;
+  validation?: string;
 }
 
 interface BackendEvent {
@@ -51,6 +114,32 @@ interface BackendEvent {
   requireGps?: boolean;
   totalBeneficiaries: number;
   totalDelivered: number;
+  customForm?: { fields: BackendFormField[] } | null;
+}
+
+/** Mapea los campos del backend a `GestorFormField`, coercionando cualquier
+ *  `type` fuera de la unión a 'text' (igual que la web en gestor-events). */
+function mapFormFields(
+  customForm: { fields: BackendFormField[] } | null | undefined,
+): GestorFormField[] {
+  const fields = customForm?.fields ?? [];
+  return fields.map((f) => ({
+    id: f.id,
+    type: (
+      FORM_FIELD_TYPES.includes(f.type as GestorFormField['type'])
+        ? f.type
+        : 'text'
+    ) as GestorFormField['type'],
+    label: f.label,
+    name: f.name,
+    required: f.required,
+    placeholder: f.placeholder,
+    helper: f.helper,
+    options: f.options,
+    multiple: f.multiple,
+    accept: f.accept,
+    validation: f.validation,
+  }));
 }
 
 function mapEvent(b: BackendEvent): EventSummary {
@@ -73,6 +162,7 @@ function mapEvent(b: BackendEvent): EventSummary {
     requireGps: b.requireGps ?? true,
     totalBeneficiaries: b.totalBeneficiaries,
     totalDelivered: b.totalDelivered,
+    customFormFields: mapFormFields(b.customForm),
   };
 }
 
@@ -160,6 +250,8 @@ function toCached(s: EventSummary, sectorsJson: string | null): CachedEvent {
     totalBeneficiaries: s.totalBeneficiaries,
     totalDelivered: s.totalDelivered,
     sectorsJson,
+    customFormFieldsJson:
+      s.customFormFields.length > 0 ? JSON.stringify(s.customFormFields) : null,
     lastSyncAt: new Date().toISOString(),
   };
 }
@@ -183,5 +275,17 @@ function fromCached(c: CachedEvent): EventSummary {
     requireGps: c.requireGps,
     totalBeneficiaries: c.totalBeneficiaries,
     totalDelivered: c.totalDelivered,
+    customFormFields: parseCustomFormFields(c.customFormFieldsJson),
   };
+}
+
+/** Parsea el JSON cacheado de campos del formulario; vacío si falta o corrupto. */
+function parseCustomFormFields(json: string | null): GestorFormField[] {
+  if (!json) return [];
+  try {
+    const parsed = JSON.parse(json) as GestorFormField[];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
 }
