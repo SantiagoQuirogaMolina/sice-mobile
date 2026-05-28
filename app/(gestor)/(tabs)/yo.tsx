@@ -9,11 +9,12 @@
  * limpiar cache local, ver TOS, etc.
  */
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   Alert,
   ScrollView,
   StyleSheet,
+  Switch,
   Text,
   View,
 } from 'react-native';
@@ -21,6 +22,12 @@ import Constants from 'expo-constants';
 import { Screen } from '../../../components/Screen';
 import { Button } from '../../../components/Button';
 import { useAuthStore } from '../../../lib/stores/auth-store';
+import {
+  authenticate,
+  isBiometricEnabled,
+  isBiometricSupported,
+  setBiometricEnabled,
+} from '../../../lib/biometric';
 import {
   colors,
   fontSizes,
@@ -42,7 +49,36 @@ const ROLE_LABELS: Record<string, string> = {
 export default function YoTab() {
   const user = useAuthStore((s) => s.user);
   const logout = useAuthStore((s) => s.logout);
+  const refreshBiometricEnabled = useAuthStore((s) => s.refreshBiometricEnabled);
   const [submitting, setSubmitting] = useState(false);
+  const [bioSupported, setBioSupported] = useState(false);
+  const [bioEnabled, setBioEnabled] = useState(false);
+  const [bioBusy, setBioBusy] = useState(false);
+
+  useEffect(() => {
+    void (async () => {
+      setBioSupported(await isBiometricSupported());
+      setBioEnabled(await isBiometricEnabled());
+    })();
+  }, []);
+
+  const onToggleBiometric = async (next: boolean) => {
+    setBioBusy(true);
+    try {
+      if (next) {
+        // Confirmar con una autenticación real antes de activar.
+        const ok = await authenticate(
+          'Confirma tu huella para activar el desbloqueo',
+        );
+        if (!ok) return;
+      }
+      await setBiometricEnabled(next);
+      setBioEnabled(next);
+      await refreshBiometricEnabled();
+    } finally {
+      setBioBusy(false);
+    }
+  };
 
   const initials = (() => {
     const name = user?.fullName?.trim() ?? '';
@@ -107,6 +143,33 @@ export default function YoTab() {
           {/* No exponemos el slug del tenant (identificador interno multi-tenant):
               el operador no lo necesita y el nombre de la entidad ya es suficiente. */}
         </View>
+
+        {/* Seguridad — desbloqueo biométrico (solo si el dispositivo lo soporta) */}
+        {bioSupported && (
+          <>
+            <Text style={styles.sectionTitle}>Seguridad</Text>
+            <View style={styles.infoCard}>
+              <View style={styles.bioRow}>
+                <View style={styles.bioTextWrap}>
+                  <Text style={styles.bioLabel}>
+                    Desbloqueo con huella / rostro
+                  </Text>
+                  <Text style={styles.bioHint}>
+                    Pide tu biometría al abrir la app. Tu sesión se mantiene; solo
+                    agrega protección en el dispositivo.
+                  </Text>
+                </View>
+                <Switch
+                  value={bioEnabled}
+                  onValueChange={(v) => void onToggleBiometric(v)}
+                  disabled={bioBusy}
+                  trackColor={{ true: colors.cyan, false: colors.border }}
+                  thumbColor="#ffffff"
+                />
+              </View>
+            </View>
+          </>
+        )}
 
         {/* Versión de la app (útil para soporte). NO exponemos la URL del
             backend (infraestructura) ni el build interno — el usuario final no
@@ -259,5 +322,24 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginTop: spacing.xl,
     lineHeight: 18,
+  },
+  bioRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: spacing.md,
+    gap: spacing.md,
+  },
+  bioTextWrap: { flex: 1 },
+  bioLabel: {
+    color: colors.textPrimary,
+    fontSize: fontSizes.sm,
+    fontWeight: fontWeights.semibold,
+  },
+  bioHint: {
+    color: colors.textMuted,
+    fontSize: fontSizes.xs,
+    marginTop: 2,
+    lineHeight: 16,
   },
 });
