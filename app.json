@@ -6,13 +6,18 @@
     "orientation": "portrait",
     "userInterfaceStyle": "dark",
     "scheme": "sice",
+    "icon": "./assets/icon.png",
     "platforms": [
       "android"
     ],
     "owner": "santiquirogamolina",
     "android": {
       "package": "com.sice.operador",
-      "versionCode": 11,
+      "versionCode": 12,
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#0077B6"
+      },
       "permissions": [
         "android.permission.CAMERA",
         "android.permission.ACCESS_FINE_LOCATION",
