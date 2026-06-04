@@ -1186,10 +1186,11 @@ export function registerExceptionOffline(input: {
 
   db.withTransactionSync(() => {
     // 1) pending_citizen
-    const barrio =
-      input.zona === 'urbana' ? input.sectorName ?? null : null;
-    const vereda =
-      input.zona === 'rural' ? input.sectorName ?? null : null;
+    // El sector es el LUGAR DE ENTREGA (va en el EventBeneficiary + el cached
+    // para mostrar la lista del operador), NO el domicilio: registrar una
+    // excepción en un sector no significa que la persona viva ahí. Por eso el
+    // ciudadano se crea SIN domicilio (tipo_zona/barrio/vereda en null, igual
+    // que el ad-hoc Tipo B); su domicilio real se registra/edita desde la web.
     db.runSync(
       `INSERT INTO pending_citizens
          (local_id, tenant_id, document_type, document_number, first_name,
@@ -1207,10 +1208,10 @@ export function registerExceptionOffline(input: {
         input.lastName.trim(),
         input.phone?.trim() || null,
         input.email?.trim().toLowerCase() || null,
-        input.zona ?? null,
         null,
-        barrio,
-        vereda,
+        null,
+        null,
+        null,
         null,
         now,
       ],
