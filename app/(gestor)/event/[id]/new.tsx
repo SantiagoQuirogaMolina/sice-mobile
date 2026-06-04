@@ -102,7 +102,7 @@ export default function NewRegistrationForm() {
           setLoadSectorsError(
             sects.reason instanceof Error
               ? sects.reason.message
-              : 'No se pudo cargar la lista de sectores',
+              : 'No se pudo cargar la lista de lugares de entrega',
           );
         }
       } finally {
@@ -398,7 +398,7 @@ export default function NewRegistrationForm() {
           </View>
 
           <Text style={styles.foot}>
-            La excepción se sube al volver la red. Si el documento ya existe en
+            El registro se sube al volver la red. Si el documento ya existe en
             otro evento, el sistema lo enlaza sin duplicar.
           </Text>
         </ScrollView>

@@ -140,7 +140,8 @@ export async function processSyncQueue(): Promise<BatchTotals> {
       listPendingEbsByStatus('error').length +
       listPendingEbsByStatus('blocked').length +
       listDeliveriesByStatus('pending').length +
-      listDeliveriesByStatus('error').length;
+      listDeliveriesByStatus('error').length +
+      listDeliveriesByStatus('blocked').length;
   } catch {
     /* si la BD falla, total=0; igual emitimos los eventos */
   }
@@ -431,7 +432,7 @@ function reportBlockedIncident(args: {
   const reason = result.kind === 'conflict' ? result.reason : result.message;
   const kind = kindFromResult(result, code);
 
-  let documentType: string | undefined;
+  let documentType: 'CC' | 'TI' | 'CE' | 'PA' | 'PPT' | undefined;
   let documentNumber: string | undefined;
   let citizenName: string | undefined;
   if (args.citizenLocalId) {

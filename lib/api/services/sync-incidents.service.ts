@@ -18,7 +18,7 @@ export type SyncIncidentKind =
 export interface ReportSyncIncidentInput {
   eventId: string;
   sectorId?: string;
-  documentType?: string;
+  documentType?: 'CC' | 'TI' | 'CE' | 'PA' | 'PPT';
   documentNumber?: string;
   citizenName?: string;
   kind: SyncIncidentKind;
