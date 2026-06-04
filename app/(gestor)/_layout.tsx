@@ -11,6 +11,7 @@ import { ActivityIndicator, StyleSheet, View } from 'react-native';
 import { Stack, useRouter } from 'expo-router';
 import { useAuthStore } from '../../lib/stores/auth-store';
 import { colors } from '../../lib/theme/tokens';
+import { ConnectivityBar } from '../../components/ConnectivityBar';
 
 const FIELD_ROLES = ['gestor', 'asistente'];
 
@@ -42,16 +43,24 @@ export default function GestorLayout() {
   }
 
   return (
-    <Stack
-      screenOptions={{
-        headerShown: false,
-        contentStyle: { backgroundColor: colors.bgPrimary },
-      }}
-    />
+    <View style={styles.flex}>
+      <Stack
+        screenOptions={{
+          headerShown: false,
+          contentStyle: { backgroundColor: colors.bgPrimary },
+        }}
+      />
+      {/* Indicador de conectividad flotante (offline / reconexión) */}
+      <ConnectivityBar />
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
+  flex: {
+    flex: 1,
+    backgroundColor: colors.bgPrimary,
+  },
   center: {
     flex: 1,
     alignItems: 'center',

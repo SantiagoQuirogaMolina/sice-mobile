@@ -43,6 +43,10 @@ import {
   uploadEventBeneficiary,
   type SyncResult,
 } from './transport';
+import {
+  reportSyncIncident,
+  type SyncIncidentKind,
+} from '../api/services/sync-incidents.service';
 
 export type QueueEvent =
   | { type: 'batch-start'; total: number }
@@ -296,6 +300,13 @@ async function processEbs(totals: BatchTotals): Promise<void> {
         }),
       totals,
     });
+    reportBlockedIncident({
+      result,
+      eventId: eb.eventId,
+      sectorId: eb.sectorId,
+      citizenLocalId: eb.citizenLocalId,
+      deviceLocalId: `eb:${eb.localId}`,
+    });
     emit({ type: 'item-done', id: eb.localId, result });
   }
 }
@@ -338,6 +349,12 @@ async function processDeliveries(totals: BatchTotals): Promise<void> {
       onError: (msg, next) => markDeliveryError(item.id, msg, next),
       totals,
     });
+    reportBlockedIncident({
+      result,
+      eventId: item.eventId,
+      citizenLocalId: isLocalCitizen(item.citizenId) ? item.citizenId : null,
+      deviceLocalId: `delivery:${item.id}`,
+    });
     emit({ type: 'item-done', id: item.id, result });
   }
 }
@@ -368,6 +385,83 @@ function applyResult(args: ApplyResultArgs): void {
     onError(result.message, nextBackoffISO(retryCount));
     totals.failed += 1;
   }
+}
+
+/* ─────────────────── Reporte de incidencias a backend ─────────────────── */
+
+const INCIDENT_UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const VALIDATION_CODES = new Set([
+  'SIGNATURE_REQUIRED',
+  'PHOTO_REQUIRED',
+  'GPS_REQUIRED',
+  'SECTOR_REQUIRED',
+  'SECTOR_REQUIRED_FOR_OPERATOR',
+]);
+
+function kindFromResult(result: SyncResult, code?: string): SyncIncidentKind {
+  if (code === 'DUPLICATE_DELIVERY') return 'duplicate_delivery';
+  if (code === 'CITIZEN_DUPLICATE') return 'duplicate_citizen';
+  if (result.kind === 'conflict') return 'duplicate_delivery';
+  if (code && VALIDATION_CODES.has(code)) return 'validation';
+  return 'rejected';
+}
+
+/**
+ * Reporta al backend una captura que quedó "blocked" (conflict o 4xx
+ * no-retryable), para que el coordinador la vea. Best-effort: cualquier fallo
+ * se traga (no rompe la cola). El backend es idempotente por deviceLocalId.
+ * Solo reporta lo que tiene eventId (delivery/EB); el citizen suelto sin
+ * evento no genera incidencia (su efecto se ve en la cadena que no progresa).
+ */
+function reportBlockedIncident(args: {
+  result: SyncResult;
+  eventId?: string;
+  sectorId?: string | null;
+  citizenLocalId?: string | null;
+  deviceLocalId: string;
+}): void {
+  const { result } = args;
+  const blocked =
+    result.kind === 'conflict' ||
+    (result.kind === 'error' && !result.retryable);
+  if (!blocked || !args.eventId) return;
+
+  const code = 'code' in result ? result.code : undefined;
+  const reason = result.kind === 'conflict' ? result.reason : result.message;
+  const kind = kindFromResult(result, code);
+
+  let documentType: string | undefined;
+  let documentNumber: string | undefined;
+  let citizenName: string | undefined;
+  if (args.citizenLocalId) {
+    const c = getPendingCitizen(args.citizenLocalId);
+    if (c) {
+      documentType = c.documentType;
+      const doc = (c.documentNumber ?? '').replace(/[^A-Za-z0-9]/g, '');
+      if (doc.length >= 4 && doc.length <= 20) documentNumber = doc;
+      const name = `${c.firstName ?? ''} ${c.lastName ?? ''}`.trim();
+      if (name) citizenName = name.slice(0, 200);
+    }
+  }
+
+  void reportSyncIncident({
+    eventId: args.eventId,
+    sectorId:
+      args.sectorId && INCIDENT_UUID_RE.test(args.sectorId)
+        ? args.sectorId
+        : undefined,
+    documentType,
+    documentNumber,
+    citizenName,
+    kind,
+    code: code ? code.slice(0, 80) : undefined,
+    reason: (reason || 'Captura rechazada por el servidor.').slice(0, 500),
+    deviceLocalId: args.deviceLocalId,
+    occurredAt: new Date().toISOString(),
+  }).catch(() => {
+    /* best-effort: la visibilidad del coordinador no debe romper el sync */
+  });
 }
 
 /** Pending sync count incluye citizens, EBs y deliveries pendientes/error. */

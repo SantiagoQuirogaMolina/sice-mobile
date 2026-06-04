@@ -22,8 +22,8 @@ import type {
 
 export type SyncResult =
   | { kind: 'ok'; serverId: string }
-  | { kind: 'conflict'; serverId: string; reason: string }
-  | { kind: 'error'; message: string; retryable: boolean };
+  | { kind: 'conflict'; serverId: string; reason: string; code?: string; status?: number }
+  | { kind: 'error'; message: string; retryable: boolean; code?: string; status?: number };
 
 interface UploadEvidenceResponse {
   url: string;
@@ -111,11 +111,14 @@ function classify(err: unknown): SyncResult {
   if (err instanceof ApiError) {
     // 409 — conflict por composedHash duplicado. Mensaje en español (sin
     // exponer el texto crudo del backend); queda guardado en lastError.
+    // Propagamos code/status para clasificar la incidencia que reporta la cola.
     if (err.status === 409) {
       return {
         kind: 'conflict',
         serverId: '',
         reason: apiErrorMessage(err, 'Conflicto detectado por el servidor.'),
+        code: err.code,
+        status: err.status,
       };
     }
     // 4xx (no 401/408/429) — error permanente, no reintentar.
@@ -124,6 +127,8 @@ function classify(err: unknown): SyncResult {
         kind: 'error',
         message: apiErrorMessage(err),
         retryable: false,
+        code: err.code,
+        status: err.status,
       };
     }
     // 5xx — server error, reintentar.
@@ -131,6 +136,8 @@ function classify(err: unknown): SyncResult {
       kind: 'error',
       message: apiErrorMessage(err),
       retryable: true,
+      code: err.code,
+      status: err.status,
     };
   }
   // Network u otros — reintentar.
