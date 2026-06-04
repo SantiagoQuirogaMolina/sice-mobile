@@ -39,6 +39,7 @@ import {
   findBeneficiaryByDoc,
   registerExceptionOffline,
   type DocumentType,
+  type ZonaType,
 } from '../../../../lib/offline/db';
 import { useAuthStore } from '../../../../lib/stores/auth-store';
 import { apiErrorMessage } from '../../../../lib/api/error-message';
@@ -69,6 +70,10 @@ export default function NewRegistrationForm() {
   const [firstName, setFirstName] = useState('');
   const [lastName, setLastName] = useState('');
   const [phone, setPhone] = useState('');
+  // Domicilio de vivienda — solo se usa si el evento pide captureDomicilio.
+  const [domTipoZona, setDomTipoZona] = useState<ZonaType | null>(null);
+  const [domVereda, setDomVereda] = useState('');
+  const [domBarrio, setDomBarrio] = useState('');
   const [justification, setJustification] = useState('');
   const [sectorId, setSectorId] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -183,10 +188,15 @@ export default function NewRegistrationForm() {
         // ad_hoc: sin justificación obligatoria
         justification: '',
         source: 'ad_hoc',
-        // Sin sector ni zona: Tipo B ad-hoc no las requiere
+        // El sector NO se usa como domicilio (Tipo B ad-hoc no tiene sector).
         sectorId: null,
         sectorName: null,
         zona: null,
+        // Domicilio de vivienda: solo si el evento lo pide y el operador lo capturó.
+        domicilio:
+          event.captureDomicilio && domTipoZona
+            ? { tipoZona: domTipoZona, vereda: domVereda, barrio: domBarrio }
+            : null,
       });
       // Sprint 9.10: dispara sync inmediato. Si hay red, sube el citizen
       // y el EB de una; si no, quedan pending y se mandan al sincronizar.
@@ -307,6 +317,61 @@ export default function NewRegistrationForm() {
             placeholder="+57 311 222 3344"
             maxLength={40}
           />
+
+          {/* Domicilio de vivienda — solo si el evento lo pide (captureDomicilio).
+              Es dónde VIVE la persona, no el lugar del evento. Opcional en campo. */}
+          {event.captureDomicilio && (
+            <>
+              <Text style={styles.sectionLabel}>Dónde vive (opcional)</Text>
+              <View style={styles.chipRow}>
+                <Pressable
+                  onPress={() => setDomTipoZona(domTipoZona === 'urbana' ? null : 'urbana')}
+                  style={({ pressed }) => [
+                    styles.chip,
+                    domTipoZona === 'urbana' && styles.chipActive,
+                    pressed && { opacity: 0.85 },
+                  ]}
+                >
+                  <Text style={[styles.chipText, domTipoZona === 'urbana' && styles.chipTextActive]}>
+                    Urbana
+                  </Text>
+                </Pressable>
+                <Pressable
+                  onPress={() => setDomTipoZona(domTipoZona === 'rural' ? null : 'rural')}
+                  style={({ pressed }) => [
+                    styles.chip,
+                    domTipoZona === 'rural' && styles.chipActive,
+                    pressed && { opacity: 0.85 },
+                  ]}
+                >
+                  <Text style={[styles.chipText, domTipoZona === 'rural' && styles.chipTextActive]}>
+                    Rural
+                  </Text>
+                </Pressable>
+              </View>
+              <View style={{ height: spacing.sm }} />
+              {domTipoZona === 'urbana' && (
+                <Input
+                  label="Barrio"
+                  value={domBarrio}
+                  onChangeText={setDomBarrio}
+                  placeholder="Ej. El Carmen"
+                  autoCapitalize="words"
+                  maxLength={80}
+                />
+              )}
+              {domTipoZona === 'rural' && (
+                <Input
+                  label="Vereda"
+                  value={domVereda}
+                  onChangeText={setDomVereda}
+                  placeholder="Ej. Santa Bárbara"
+                  autoCapitalize="words"
+                  maxLength={80}
+                />
+              )}
+            </>
+          )}
 
           {/* Tipo B (ad-hoc): sin justificación */}
 

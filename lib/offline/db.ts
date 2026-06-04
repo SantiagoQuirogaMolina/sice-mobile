@@ -59,6 +59,7 @@ function initSchema(db: SQLite.SQLiteDatabase): void {
       require_signature INTEGER NOT NULL DEFAULT 1,
       require_photo INTEGER NOT NULL DEFAULT 1,
       require_gps INTEGER NOT NULL DEFAULT 1,
+      capture_domicilio INTEGER NOT NULL DEFAULT 0,
       total_beneficiaries INTEGER NOT NULL DEFAULT 0,
       total_delivered INTEGER NOT NULL DEFAULT 0,
       sectors_json TEXT,
@@ -189,6 +190,8 @@ function initSchema(db: SQLite.SQLiteDatabase): void {
   addColumnIfMissing(db, 'cached_events', 'require_signature', 'INTEGER NOT NULL DEFAULT 1');
   addColumnIfMissing(db, 'cached_events', 'require_photo', 'INTEGER NOT NULL DEFAULT 1');
   addColumnIfMissing(db, 'cached_events', 'require_gps', 'INTEGER NOT NULL DEFAULT 1');
+  // Domicilio configurable por evento (default 0 = no pedir, igual que el backend).
+  addColumnIfMissing(db, 'cached_events', 'capture_domicilio', 'INTEGER NOT NULL DEFAULT 0');
 
   // Formulario dinámico (Tipo B): los campos que el coordinador armó en la web.
   // Migración para installs que cachearon el evento antes de esta columna.
@@ -242,6 +245,7 @@ export interface CachedEvent {
   requireSignature: boolean;
   requirePhoto: boolean;
   requireGps: boolean;
+  captureDomicilio: boolean;
   totalBeneficiaries: number;
   totalDelivered: number;
   sectorsJson: string | null;
@@ -316,10 +320,10 @@ export function saveCachedEvent(event: CachedEvent): void {
     `INSERT OR REPLACE INTO cached_events
        (id, tenant_id, name, type, status, description, start_date, end_date,
         departamento, municipio, allow_exceptions, allow_qr_self_register,
-        require_signature, require_photo, require_gps,
+        require_signature, require_photo, require_gps, capture_domicilio,
         total_beneficiaries, total_delivered, sectors_json,
         custom_form_fields_json, last_sync_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       event.id,
       event.tenantId,
@@ -336,6 +340,7 @@ export function saveCachedEvent(event: CachedEvent): void {
       event.requireSignature ? 1 : 0,
       event.requirePhoto ? 1 : 0,
       event.requireGps ? 1 : 0,
+      event.captureDomicilio ? 1 : 0,
       event.totalBeneficiaries,
       event.totalDelivered,
       event.sectorsJson,
@@ -368,6 +373,7 @@ export function getCachedEvent(id: string): CachedEvent | null {
     requireSignature: bool((row.require_signature as number | null) ?? 1),
     requirePhoto: bool((row.require_photo as number | null) ?? 1),
     requireGps: bool((row.require_gps as number | null) ?? 1),
+    captureDomicilio: bool((row.capture_domicilio as number | null) ?? 0),
     totalBeneficiaries: row.total_beneficiaries as number,
     totalDelivered: row.total_delivered as number,
     sectorsJson: (row.sectors_json as string | null) ?? null,
@@ -397,6 +403,7 @@ export function listCachedEvents(): CachedEvent[] {
     requireSignature: bool((row.require_signature as number | null) ?? 1),
     requirePhoto: bool((row.require_photo as number | null) ?? 1),
     requireGps: bool((row.require_gps as number | null) ?? 1),
+    captureDomicilio: bool((row.capture_domicilio as number | null) ?? 0),
     totalBeneficiaries: row.total_beneficiaries as number,
     totalDelivered: row.total_delivered as number,
     sectorsJson: (row.sectors_json as string | null) ?? null,
@@ -1165,6 +1172,13 @@ export function registerExceptionOffline(input: {
   sectorId?: string | null;
   sectorName?: string | null;
   zona?: ZonaType | null;
+  /** Domicilio de VIVIENDA del ciudadano. Solo se usa si el evento pide
+   *  captureDomicilio y el operador lo capturó. El sector NO es el domicilio. */
+  domicilio?: {
+    tipoZona: ZonaType;
+    vereda?: string | null;
+    barrio?: string | null;
+  } | null;
   /** Justificación del registro:
    *  - 'exception' (Tipo A) → REQUIRED, mínimo 20 chars (validado en UI)
    *  - 'ad_hoc' (Tipo B / asistencia ad-hoc) → opcional/null
@@ -1186,11 +1200,12 @@ export function registerExceptionOffline(input: {
 
   db.withTransactionSync(() => {
     // 1) pending_citizen
-    // El sector es el LUGAR DE ENTREGA (va en el EventBeneficiary + el cached
-    // para mostrar la lista del operador), NO el domicilio: registrar una
-    // excepción en un sector no significa que la persona viva ahí. Por eso el
-    // ciudadano se crea SIN domicilio (tipo_zona/barrio/vereda en null, igual
-    // que el ad-hoc Tipo B); su domicilio real se registra/edita desde la web.
+    // El sector es el LUGAR DE ENTREGA (EventBeneficiary + cached para la lista),
+    // NO el domicilio: recibir en un sector no implica vivir ahí. Por eso NUNCA
+    // derivamos el domicilio del sector. El domicilio de VIVIENDA solo se guarda
+    // si el evento lo pide (captureDomicilio) y el operador lo capturó
+    // (input.domicilio); si no, el ciudadano queda sin domicilio.
+    const dz = input.domicilio?.tipoZona ?? null;
     db.runSync(
       `INSERT INTO pending_citizens
          (local_id, tenant_id, document_type, document_number, first_name,
@@ -1208,10 +1223,10 @@ export function registerExceptionOffline(input: {
         input.lastName.trim(),
         input.phone?.trim() || null,
         input.email?.trim().toLowerCase() || null,
+        dz,
         null,
-        null,
-        null,
-        null,
+        dz === 'urbana' ? input.domicilio?.barrio?.trim() || null : null,
+        dz === 'rural' ? input.domicilio?.vereda?.trim() || null : null,
         null,
         now,
       ],

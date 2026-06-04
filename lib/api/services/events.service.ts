@@ -76,6 +76,7 @@ export interface EventSummary {
   requireSignature: boolean;
   requirePhoto: boolean;
   requireGps: boolean;
+  captureDomicilio: boolean;
   totalBeneficiaries: number;
   totalDelivered: number;
   /** Campos del formulario dinámico (Tipo B). Vacío en Tipo A o sin form. */
@@ -112,6 +113,7 @@ interface BackendEvent {
   requireSignature?: boolean;
   requirePhoto?: boolean;
   requireGps?: boolean;
+  captureDomicilio?: boolean;
   totalBeneficiaries: number;
   totalDelivered: number;
   customForm?: { fields: BackendFormField[] } | null;
@@ -160,6 +162,7 @@ function mapEvent(b: BackendEvent): EventSummary {
     requireSignature: b.requireSignature ?? true,
     requirePhoto: b.requirePhoto ?? true,
     requireGps: b.requireGps ?? true,
+    captureDomicilio: b.captureDomicilio ?? false,
     totalBeneficiaries: b.totalBeneficiaries,
     totalDelivered: b.totalDelivered,
     customFormFields: mapFormFields(b.customForm),
@@ -247,6 +250,7 @@ function toCached(s: EventSummary, sectorsJson: string | null): CachedEvent {
     requireSignature: s.requireSignature,
     requirePhoto: s.requirePhoto,
     requireGps: s.requireGps,
+    captureDomicilio: s.captureDomicilio,
     totalBeneficiaries: s.totalBeneficiaries,
     totalDelivered: s.totalDelivered,
     sectorsJson,
@@ -273,6 +277,7 @@ function fromCached(c: CachedEvent): EventSummary {
     requireSignature: c.requireSignature,
     requirePhoto: c.requirePhoto,
     requireGps: c.requireGps,
+    captureDomicilio: c.captureDomicilio,
     totalBeneficiaries: c.totalBeneficiaries,
     totalDelivered: c.totalDelivered,
     customFormFields: parseCustomFormFields(c.customFormFieldsJson),
