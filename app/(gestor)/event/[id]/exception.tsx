@@ -104,7 +104,7 @@ export default function ExceptionForm() {
           setLoadSectorsError(
             sects.reason instanceof Error
               ? sects.reason.message
-              : 'No se pudo cargar la lista de sectores',
+              : 'No se pudo cargar la lista de lugares de entrega',
           );
         }
       } finally {
@@ -166,11 +166,11 @@ export default function ExceptionForm() {
     return (
       <Screen>
         <View style={styles.center}>
-          <Text style={styles.errorTitle}>Sin sectores asignados</Text>
+          <Text style={styles.errorTitle}>Sin lugares de entrega asignados</Text>
           <Text style={styles.errorBody}>
             {loadSectorsError
-              ? 'No se pudo cargar la lista de sectores. Reintentá con red.'
-              : 'No estás asignado como operador a ningún sector de este evento. Contactá al coordinador para que te asigne y volvé a intentar.'}
+              ? 'No se pudo cargar la lista de lugares de entrega. Reintentá con red.'
+              : 'No estás asignado como operador a ningún lugar de entrega de este evento. Contactá al coordinador para que te asigne y volvé a intentar.'}
           </Text>
           <View style={{ marginTop: spacing.lg, alignSelf: 'stretch' }}>
             <Button label="Volver" variant="secondary" onPress={() => router.back()} />
@@ -218,7 +218,7 @@ export default function ExceptionForm() {
     }
 
     if (!sectorId) {
-      setError('Selecciona un sector antes de continuar.');
+      setError('Selecciona un lugar de entrega antes de continuar.');
       return;
     }
     const sectorMeta = myAssignedSectors.find((s) => s.id === sectorId);
@@ -293,10 +293,10 @@ export default function ExceptionForm() {
           </View>
 
           {/* Sector — el backend lo exige para gestor/asistente */}
-          <Text style={styles.sectionLabel}>Sector</Text>
+          <Text style={styles.sectionLabel}>Lugar de entrega</Text>
           {myAssignedSectors.length === 1 ? (
             <View style={styles.sectorAuto}>
-              <Text style={styles.sectorAutoLabel}>Asignado a tu sector</Text>
+              <Text style={styles.sectorAutoLabel}>Asignado a tu lugar de entrega</Text>
               <Text style={styles.sectorAutoName}>
                 {myAssignedSectors[0].name}
               </Text>

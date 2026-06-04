@@ -288,7 +288,7 @@ export default function SyncScreen() {
                   </Text>
                   <Text style={styles.blockedError}>
                     {isSectorRequired
-                      ? '⚠ Faltó el sector. Borrá esta y créala de nuevo desde "Registrar excepción" (la app ya lo pide).'
+                      ? '⚠ Faltó el lugar de entrega. Borrá esta y créala de nuevo desde "Registrar excepción" (la app ya lo pide).'
                       : `⚠ ${errorMsg}`}
                   </Text>
                 </View>

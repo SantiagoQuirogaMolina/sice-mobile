@@ -265,7 +265,7 @@ export default function InicioTab() {
           <View style={styles.emptyCard}>
             <Text style={styles.emptyText}>
               Aún no tienes eventos asignados. Cuando el coordinador te asigne
-              a un sector aparecerán acá.
+              a un lugar de entrega aparecerán acá.
             </Text>
             <View style={{ marginTop: spacing.md }}>
               <Button
