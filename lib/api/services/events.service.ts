@@ -189,12 +189,27 @@ interface BackendSector {
 
 export const eventsService = {
   /**
-   * Lista los eventos donde el operador (gestor/asistente) está asignado.
+   * Lista TODOS los eventos donde el operador (gestor/asistente) está asignado.
    * El backend filtra automáticamente por caller.role en events.service.list.
+   *
+   * Pagina el fetch (páginas de 100) hasta agotar, para no perder eventos si el
+   * operador tiene más de los que caben en una página (antes se topaba en 50 y
+   * los demás no se veían). Un operador no tiene miles, pero el guard corta en
+   * 5.000 por seguridad.
    */
   async listForMe(): Promise<EventSummary[]> {
-    const items = await api.get<BackendEvent[]>('/api/v1/events?limit=50');
-    return items.map(mapEvent);
+    const PAGE = 100;
+    const all: BackendEvent[] = [];
+    let offset = 0;
+    for (let guard = 0; guard < 50; guard++) {
+      const page = await api.get<BackendEvent[]>(
+        `/api/v1/events?limit=${PAGE}&offset=${offset}`,
+      );
+      all.push(...page);
+      if (page.length < PAGE) break; // última página
+      offset += PAGE;
+    }
+    return all.map(mapEvent);
   },
 
   /**

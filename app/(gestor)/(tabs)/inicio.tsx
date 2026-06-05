@@ -6,14 +6,16 @@
  * tab "Yo" para no congestionar el header.
  */
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   FlatList,
   Pressable,
   RefreshControl,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from 'react-native';
 import { useRouter } from 'expo-router';
@@ -27,7 +29,13 @@ import {
   type EventSummary,
   type GestorFormField,
 } from '../../../lib/api/services/events.service';
-import { listCachedEvents, saveCachedEvent } from '../../../lib/offline/db';
+import {
+  archiveEventLocal,
+  listArchivedEventIds,
+  listCachedEvents,
+  saveCachedEvent,
+  unarchiveEventLocal,
+} from '../../../lib/offline/db';
 import {
   colors,
   fontSizes,
@@ -37,6 +45,14 @@ import {
 } from '../../../lib/theme/tokens';
 
 type SortMode = 'upcoming' | 'recent';
+
+/** Normaliza para búsqueda: minúsculas + sin acentos. */
+function normalizeText(s: string): string {
+  return s
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '');
+}
 
 /** Parsea el JSON cacheado de campos del formulario; vacío si falta o corrupto. */
 function parseCachedFormFields(json: string | null): GestorFormField[] {
@@ -58,6 +74,21 @@ export default function InicioTab() {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [sortMode, setSortMode] = useState<SortMode>('upcoming');
+  const [query, setQuery] = useState('');
+  const [view, setView] = useState<'active' | 'archived'>('active');
+  const [archivedIds, setArchivedIds] = useState<Set<string>>(new Set());
+
+  const userId = user?.id ?? '';
+
+  // Archivados localmente por este operador (declutter; no toca el evento global).
+  const loadArchived = useCallback(() => {
+    if (!userId) return;
+    try {
+      setArchivedIds(new Set(listArchivedEventIds(userId)));
+    } catch {
+      /* noop */
+    }
+  }, [userId]);
 
   // Carga del cache local: instantánea y funciona sin red.
   // Filtramos a estados utilizables igual que el flow online.
@@ -154,11 +185,14 @@ export default function InicioTab() {
   };
 
   useEffect(() => {
+    // 0. Archivados locales (sincrónico)
+    loadArchived();
     // 1. Cargar cache inmediatamente (sincrónico, sin red)
     loadFromCache();
     setLoading(false); // ya tenemos datos del cache, no bloqueamos UI
     // 2. Intentar refresh del backend en background
     void load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const onRefresh = () => {
@@ -166,16 +200,62 @@ export default function InicioTab() {
     void load();
   };
 
-  // Orden por fecha: "Próximos" muestra primero los que aún no terminan,
-  // ordenados por startDate asc. "Recientes" muestra primero los más
-  // recientes ordenados por endDate desc (útil para volver a un evento
-  // que se cerró ayer y revisar registros).
-  const sortedEvents = [...events].sort((a, b) => {
-    if (sortMode === 'upcoming') {
-      return new Date(a.startDate).getTime() - new Date(b.startDate).getTime();
+  // Archivar / desarchivar (local).
+  const toggleArchive = (ev: EventSummary, isArchived: boolean) => {
+    if (!userId) return;
+    try {
+      if (isArchived) unarchiveEventLocal(ev.id, userId);
+      else archiveEventLocal(ev.id, userId);
+      loadArchived();
+    } catch {
+      /* noop */
     }
-    return new Date(b.endDate).getTime() - new Date(a.endDate).getTime();
-  });
+  };
+
+  const onLongPressEvent = (ev: EventSummary) => {
+    const isArchived = archivedIds.has(ev.id);
+    Alert.alert(
+      ev.name,
+      isArchived
+        ? 'Este evento está archivado. ¿Desarchivar? Volverá a tu lista de activos.'
+        : '¿Archivar este evento? Se ocultará de tu lista (queda guardado y puedes desarchivarlo cuando quieras).',
+      [
+        { text: 'Cancelar', style: 'cancel' },
+        {
+          text: isArchived ? 'Desarchivar' : 'Archivar',
+          onPress: () => toggleArchive(ev, isArchived),
+        },
+      ],
+    );
+  };
+
+  const archivedCount = useMemo(
+    () => events.filter((e) => archivedIds.has(e.id)).length,
+    [events, archivedIds],
+  );
+  const activeCount = events.length - archivedCount;
+  const showArchiveTab = archivedCount > 0 || view === 'archived';
+
+  // Lista visible = vista (activos/archivados) + búsqueda + orden por fecha.
+  // "Próximos" = startDate asc; "Recientes" = endDate desc.
+  const visibleEvents = useMemo(() => {
+    const q = normalizeText(query.trim());
+    return events
+      .filter((e) =>
+        view === 'archived' ? archivedIds.has(e.id) : !archivedIds.has(e.id),
+      )
+      .filter(
+        (e) =>
+          q === '' ||
+          normalizeText(e.name).includes(q) ||
+          normalizeText(e.municipio).includes(q),
+      )
+      .sort((a, b) =>
+        sortMode === 'upcoming'
+          ? new Date(a.startDate).getTime() - new Date(b.startDate).getTime()
+          : new Date(b.endDate).getTime() - new Date(a.endDate).getTime(),
+      );
+  }, [events, archivedIds, view, query, sortMode]);
 
   if (loading) {
     return (
@@ -204,8 +284,52 @@ export default function InicioTab() {
         </View>
       )}
 
-      {/* Toggle de orden por fecha (M2) */}
-      {events.length > 1 && (
+      {/* Búsqueda por nombre o municipio */}
+      <View style={styles.searchRow}>
+        <TextInput
+          value={query}
+          onChangeText={setQuery}
+          placeholder="Buscar por nombre o municipio…"
+          placeholderTextColor={colors.textMuted}
+          style={styles.searchInput}
+          autoCorrect={false}
+          returnKeyType="search"
+        />
+        {query.length > 0 && (
+          <Pressable onPress={() => setQuery('')} style={styles.searchClear} hitSlop={8}>
+            <Text style={styles.searchClearText}>✕</Text>
+          </Pressable>
+        )}
+      </View>
+
+      {/* Vista: Activos / Archivados (solo aparece si hay archivados) */}
+      {showArchiveTab && (
+        <View style={styles.sortRow}>
+          <Pressable
+            onPress={() => setView('active')}
+            style={[styles.sortChip, view === 'active' && styles.sortChipActive]}
+          >
+            <Text
+              style={[styles.sortChipText, view === 'active' && styles.sortChipTextActive]}
+            >
+              Activos ({activeCount})
+            </Text>
+          </Pressable>
+          <Pressable
+            onPress={() => setView('archived')}
+            style={[styles.sortChip, view === 'archived' && styles.sortChipActive]}
+          >
+            <Text
+              style={[styles.sortChipText, view === 'archived' && styles.sortChipTextActive]}
+            >
+              Archivados ({archivedCount})
+            </Text>
+          </Pressable>
+        </View>
+      )}
+
+      {/* Orden por fecha */}
+      {visibleEvents.length > 1 && (
         <View style={styles.sortRow}>
           <Pressable
             onPress={() => setSortMode('upcoming')}
@@ -243,9 +367,10 @@ export default function InicioTab() {
       )}
 
       <FlatList
-        data={sortedEvents}
+        data={visibleEvents}
         keyExtractor={(e) => e.id}
         contentContainerStyle={styles.listContent}
+        keyboardShouldPersistTaps="handled"
         refreshControl={
           <RefreshControl
             refreshing={refreshing}
@@ -256,24 +381,33 @@ export default function InicioTab() {
         }
         ListHeaderComponent={
           <Text style={styles.sectionTitle}>
-            {events.length === 0
-              ? 'No tienes eventos asignados'
-              : `${events.length} evento${events.length === 1 ? '' : 's'} activo${events.length === 1 ? '' : 's'}`}
+            {view === 'archived'
+              ? `${archivedCount} archivado${archivedCount === 1 ? '' : 's'}`
+              : query.trim() !== ''
+                ? `${visibleEvents.length} resultado${visibleEvents.length === 1 ? '' : 's'}`
+                : activeCount === 0
+                  ? 'No tienes eventos activos'
+                  : `${activeCount} evento${activeCount === 1 ? '' : 's'} activo${activeCount === 1 ? '' : 's'} · mantén presionado para archivar`}
           </Text>
         }
         ListEmptyComponent={
           <View style={styles.emptyCard}>
             <Text style={styles.emptyText}>
-              Aún no tienes eventos asignados. Cuando el coordinador te asigne
-              a un lugar de entrega aparecerán acá.
+              {view === 'archived'
+                ? 'No tienes eventos archivados.'
+                : query.trim() !== ''
+                  ? 'Ningún evento coincide con tu búsqueda.'
+                  : 'Aún no tienes eventos asignados. Cuando el coordinador te asigne a un lugar de entrega aparecerán acá.'}
             </Text>
-            <View style={{ marginTop: spacing.md }}>
-              <Button
-                label="Refrescar"
-                variant="secondary"
-                onPress={() => void load()}
-              />
-            </View>
+            {view === 'active' && query.trim() === '' && (
+              <View style={{ marginTop: spacing.md }}>
+                <Button
+                  label="Refrescar"
+                  variant="secondary"
+                  onPress={() => void load()}
+                />
+              </View>
+            )}
           </View>
         }
         renderItem={({ item }) => {
@@ -288,6 +422,8 @@ export default function InicioTab() {
               onPress={() => {
                 router.push(`/event/${item.id}` as never);
               }}
+              onLongPress={() => onLongPressEvent(item)}
+              delayLongPress={350}
               style={({ pressed }) => [
                 styles.eventCard,
                 pressed && { opacity: 0.85 },
@@ -473,6 +609,32 @@ const styles = StyleSheet.create({
   errorText: {
     color: colors.warning,
     fontSize: fontSizes.sm,
+  },
+  searchRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginHorizontal: spacing.lg,
+    marginTop: spacing.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.bgInput,
+    borderRadius: radii.md,
+    paddingHorizontal: spacing.md,
+  },
+  searchInput: {
+    flex: 1,
+    color: colors.textPrimary,
+    fontSize: fontSizes.md,
+    paddingVertical: spacing.sm,
+  },
+  searchClear: {
+    paddingLeft: spacing.sm,
+    paddingVertical: spacing.xs,
+  },
+  searchClearText: {
+    color: colors.textMuted,
+    fontSize: fontSizes.md,
+    fontWeight: fontWeights.bold,
   },
   listContent: {
     padding: spacing.lg,

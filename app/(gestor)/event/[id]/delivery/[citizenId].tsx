@@ -18,6 +18,7 @@ import {
   ActivityIndicator,
   Image,
   KeyboardAvoidingView,
+  Modal,
   Platform,
   Pressable,
   ScrollView,
@@ -513,6 +514,62 @@ function VerifyStep({
 
 /* ─────────────────────────── Step 2: Signature ─────────────────────────── */
 
+/**
+ * Bloqueo de palma (palm rejection) inyectado en el WebView de la firma.
+ *
+ * En Android moderno signature_pad usa POINTER events. Sin esto, cuando el
+ * beneficiario apoya la mano, la palma genera punteros extra que dibujan
+ * trazos/saltos y dañan la firma. Aquí, en FASE DE CAPTURA, dejamos pasar SOLO
+ * el primer puntero (el dedo con el que se firma) al handler original probado y
+ * SUPRIMIMOS los demás (palma) por pointerId y por tamaño de contacto grande.
+ * No reescribimos la lógica de dibujo → no puede romper la captura del primario.
+ */
+const PALM_LOCK_JS = `
+(function () {
+  function setup() {
+    if (!window.PointerEvent) return; // sin PointerEvent: comportamiento original
+    var canvas = document.querySelector('canvas');
+    if (!canvas) { return setTimeout(setup, 80); }
+    if (canvas.__palmLock) return;
+    canvas.__palmLock = true;
+    var primaryId = null;
+    function isPalm(e) {
+      // Solo si el dispositivo reporta tamaño de contacto. Una palma/muñeca es
+      // mucho más grande que una yema (~15-40px); umbral alto = no bloquea dedos.
+      return e.width > 1 && e.height > 1 && Math.max(e.width, e.height) >= 60;
+    }
+    function onDown(e) {
+      if (isPalm(e)) { e.stopImmediatePropagation(); return; }   // palma → ignorar
+      if (primaryId === null) { primaryId = e.pointerId; return; } // primer dedo → pasa
+      e.stopImmediatePropagation();                                // contacto extra → ignorar
+    }
+    function onRest(e) {
+      if (primaryId !== null && e.pointerId !== primaryId) {
+        e.stopImmediatePropagation();                              // no es el primario → ignorar
+        return;
+      }
+      if ((e.type === 'pointerup' || e.type === 'pointercancel') && e.pointerId === primaryId) {
+        primaryId = null;                                          // soltó el primario → liberar
+      }
+    }
+    canvas.addEventListener('pointerdown', onDown, true);
+    canvas.addEventListener('pointermove', onRest, true);
+    canvas.addEventListener('pointercancel', onRest, true);
+    document.addEventListener('pointerup', onRest, true);
+  }
+  setup();
+})();
+true;
+`;
+
+// CSS del recuadro de firma (compartido entre inline y pantalla completa).
+const SIGNATURE_WEB_STYLE = `
+  .m-signature-pad { box-shadow: none; border: none; margin: 0; }
+  .m-signature-pad--body { border: none; }
+  .m-signature-pad--footer { display: none; }
+  body, html { background-color: white; height: 100%; }
+`;
+
 function SignatureStep({
   onBack,
   onContinue,
@@ -520,46 +577,51 @@ function SignatureStep({
   onBack: () => void;
   onContinue: (dataUrl: string) => void;
 }) {
-  // signature-canvas tipa el ref más rico (changePenColor, draw, etc) pero
-  // solo usamos readSignature/clearSignature. Cast a any para no instalar
-  // los types extras que no necesitamos.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const sigRef = useRef<any>(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const fsRef = useRef<any>(null);
   const [hasInk, setHasInk] = useState(false);
+  const [fsOpen, setFsOpen] = useState(false);
+  const [fsHasInk, setFsHasInk] = useState(false);
 
   return (
     <View style={styles.stepBody}>
       <Text style={styles.h1}>Firma manuscrita</Text>
       <Text style={styles.h2}>
-        El beneficiario firma con el dedo dentro del recuadro blanco.
+        El beneficiario firma con el dedo. Si la persona tiene dificultad, abre el
+        recuadro a pantalla completa.
       </Text>
 
-      <View style={styles.signatureBox}>
+      <Button
+        label="⛶  Firmar en pantalla completa"
+        variant="secondary"
+        onPress={() => {
+          setFsHasInk(false);
+          setFsOpen(true);
+        }}
+      />
+
+      <View style={[styles.signatureBox, { marginTop: spacing.md }]}>
         <SignatureScreen
           ref={sigRef}
           onOK={(sig) => onContinue(sig)}
-          onEmpty={() => {
-            // empty signature
-          }}
+          onEmpty={() => {}}
           onBegin={() => setHasInk(true)}
           onClear={() => setHasInk(false)}
           descriptionText=""
           clearText="Limpiar"
           confirmText="OK"
-          webStyle={`
-            .m-signature-pad { box-shadow: none; border: none; margin: 0; }
-            .m-signature-pad--body { border: none; }
-            .m-signature-pad--footer { display: none; }
-            body, html { background-color: white; height: 100%; }
-          `}
+          webStyle={SIGNATURE_WEB_STYLE}
           backgroundColor="white"
           penColor="#0D1B2A"
           minWidth={2}
           maxWidth={4}
+          webviewProps={{ injectedJavaScript: PALM_LOCK_JS }}
         />
       </View>
 
-      <View style={styles.row2}>
+      <View style={styles.row3}>
         <View style={{ flex: 1 }}>
           <Button
             label="Limpiar"
@@ -571,12 +633,13 @@ function SignatureStep({
           />
         </View>
         <View style={{ flex: 1 }}>
+          <Button label="Deshacer" variant="ghost" onPress={() => sigRef.current?.undo()} />
+        </View>
+        <View style={{ flex: 1 }}>
           <Button
-            label={hasInk ? 'Continuar' : 'Firma vacía'}
+            label={hasInk ? 'Continuar' : 'Vacía'}
             disabled={!hasInk}
-            onPress={() => {
-              sigRef.current?.readSignature();
-            }}
+            onPress={() => sigRef.current?.readSignature()}
           />
         </View>
       </View>
@@ -584,6 +647,66 @@ function SignatureStep({
       <View style={{ marginTop: spacing.sm }}>
         <Button label="← Volver" variant="ghost" onPress={onBack} />
       </View>
+
+      {/* Pantalla completa: mismo canvas, mucho más grande (accesibilidad) */}
+      <Modal
+        visible={fsOpen}
+        animationType="slide"
+        onRequestClose={() => setFsOpen(false)}
+      >
+        <View style={styles.fsContainer}>
+          <View style={styles.fsHeader}>
+            <Text style={styles.fsTitle}>Firma del beneficiario</Text>
+            <Pressable onPress={() => setFsOpen(false)} hitSlop={14}>
+              <Text style={styles.fsClose}>✕</Text>
+            </Pressable>
+          </View>
+          <Text style={styles.fsHint}>
+            Firma con el dedo. Puedes apoyar la mano en la pantalla: solo se dibuja
+            el dedo con el que firmas.
+          </Text>
+          <View style={styles.fsCanvas}>
+            <SignatureScreen
+              ref={fsRef}
+              onOK={(sig) => onContinue(sig)}
+              onEmpty={() => {}}
+              onBegin={() => setFsHasInk(true)}
+              onClear={() => setFsHasInk(false)}
+              descriptionText=""
+              clearText="Limpiar"
+              confirmText="OK"
+              webStyle={SIGNATURE_WEB_STYLE}
+              backgroundColor="white"
+              penColor="#0D1B2A"
+              minWidth={2}
+              maxWidth={4}
+              webviewProps={{ injectedJavaScript: PALM_LOCK_JS }}
+            />
+          </View>
+          <View style={styles.fsButtons}>
+            <View style={{ flex: 1 }}>
+              <Button
+                label="Limpiar"
+                variant="ghost"
+                onPress={() => {
+                  fsRef.current?.clearSignature();
+                  setFsHasInk(false);
+                }}
+              />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Button label="Deshacer" variant="ghost" onPress={() => fsRef.current?.undo()} />
+            </View>
+            <View style={{ flex: 1.4 }}>
+              <Button
+                label={fsHasInk ? 'Usar firma' : 'Vacía'}
+                disabled={!fsHasInk}
+                onPress={() => fsRef.current?.readSignature()}
+              />
+            </View>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -1197,6 +1320,51 @@ const styles = StyleSheet.create({
     marginBottom: spacing.md,
   },
   row2: {
+    flexDirection: 'row',
+    gap: spacing.sm,
+  },
+  row3: {
+    flexDirection: 'row',
+    gap: spacing.sm,
+  },
+  // Firma a pantalla completa
+  fsContainer: {
+    flex: 1,
+    backgroundColor: colors.bgPrimary,
+    paddingTop: 44,
+    paddingHorizontal: spacing.md,
+    paddingBottom: spacing.md,
+  },
+  fsHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: spacing.sm,
+  },
+  fsTitle: {
+    color: colors.textPrimary,
+    fontSize: fontSizes.lg,
+    fontWeight: fontWeights.bold,
+  },
+  fsClose: {
+    color: colors.textPrimary,
+    fontSize: 26,
+    fontWeight: fontWeights.bold,
+  },
+  fsHint: {
+    color: colors.textSecondary,
+    fontSize: fontSizes.sm,
+    marginBottom: spacing.sm,
+    lineHeight: 20,
+  },
+  fsCanvas: {
+    flex: 1,
+    backgroundColor: 'white',
+    borderRadius: radii.md,
+    overflow: 'hidden',
+    marginBottom: spacing.md,
+  },
+  fsButtons: {
     flexDirection: 'row',
     gap: spacing.sm,
   },

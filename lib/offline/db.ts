@@ -182,6 +182,16 @@ function initSchema(db: SQLite.SQLiteDatabase): void {
       ON pending_event_beneficiaries(event_id);
     CREATE INDEX IF NOT EXISTS idx_pending_eb_citizen
       ON pending_event_beneficiaries(citizen_local_id);
+
+    -- Archivado LOCAL de eventos por operador (declutter de la lista). NO toca
+    -- el evento global ni el backend: solo oculta el evento de la lista de ESTE
+    -- usuario en ESTE dispositivo. Se puede desarchivar.
+    CREATE TABLE IF NOT EXISTS archived_events (
+      event_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      archived_at TEXT NOT NULL,
+      PRIMARY KEY (event_id, user_id)
+    );
   `);
 
   // #2: migración ligera para installs existentes (la BD pudo crearse antes
@@ -410,6 +420,37 @@ export function listCachedEvents(): CachedEvent[] {
     customFormFieldsJson: (row.custom_form_fields_json as string | null) ?? null,
     lastSyncAt: (row.last_sync_at as string | null) ?? null,
   }));
+}
+
+/* ─────────────────────── Archivado local por operador ─────────────────────── */
+
+/** Archiva un evento localmente para este usuario (oculta de la lista). */
+export function archiveEventLocal(eventId: string, userId: string): void {
+  const db = getDB();
+  db.runSync(
+    `INSERT OR REPLACE INTO archived_events (event_id, user_id, archived_at)
+     VALUES (?, ?, ?)`,
+    [eventId, userId, new Date().toISOString()],
+  );
+}
+
+/** Desarchiva un evento (vuelve a la lista principal). */
+export function unarchiveEventLocal(eventId: string, userId: string): void {
+  const db = getDB();
+  db.runSync(`DELETE FROM archived_events WHERE event_id = ? AND user_id = ?`, [
+    eventId,
+    userId,
+  ]);
+}
+
+/** IDs de eventos archivados localmente por este usuario. */
+export function listArchivedEventIds(userId: string): string[] {
+  const db = getDB();
+  const rows = db.getAllSync<{ event_id: string }>(
+    `SELECT event_id FROM archived_events WHERE user_id = ?`,
+    [userId],
+  );
+  return rows.map((r) => r.event_id);
 }
 
 /* ─────────────────────────── Beneficiaries API ─────────────────────────── */
