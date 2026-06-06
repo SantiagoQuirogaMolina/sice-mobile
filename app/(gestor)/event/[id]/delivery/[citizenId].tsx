@@ -37,6 +37,7 @@ import {
   enqueueDelivery,
   findBeneficiaryByCitizen,
   getCachedEvent,
+  getPendingEbByCitizen,
   isLocalCitizen,
   listDeliveriesByEvent,
   newOfflineId,
@@ -275,6 +276,16 @@ export default function DeliveryWizardScreen() {
       setComposedHash(hash);
       setCitizenIsLocal(isLocalCitizen(beneficiary.citizenId));
 
+      // P1: si la captura proviene de una EXCEPCIÓN (ciudadano local cuyo
+      // EventBeneficiary tiene source='exception'), propagamos la marca y la
+      // justificación al Delivery — así el backend la registra como excepción
+      // (dispara audit + notificación al coordinador), en vez de subir como
+      // entrega normal. La justificación (≥20 chars) ya la validó exception.tsx.
+      const pendingEb = isLocalCitizen(beneficiary.citizenId)
+        ? getPendingEbByCitizen(eventId, beneficiary.citizenId)
+        : null;
+      const isExceptionCapture = pendingEb?.source === 'exception';
+
       enqueueDelivery({
         id: draft.offlineId,
         eventId,
@@ -295,6 +306,10 @@ export default function DeliveryWizardScreen() {
           Object.keys(draft.customFormData).length > 0
             ? draft.customFormData
             : null,
+        isException: isExceptionCapture,
+        exceptionJustification: isExceptionCapture
+          ? (pendingEb?.justification ?? null)
+          : null,
         syncStatus: 'pending',
         retryCount: 0,
         nextAttemptAt: null,

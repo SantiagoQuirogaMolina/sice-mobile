@@ -107,6 +107,8 @@ function initSchema(db: SQLite.SQLiteDatabase): void {
       gps_accuracy REAL,
       gps_status TEXT NOT NULL DEFAULT 'ok',
       custom_form_data TEXT,
+      is_exception INTEGER NOT NULL DEFAULT 0,
+      exception_justification TEXT,
       sync_status TEXT NOT NULL DEFAULT 'pending',
       retry_count INTEGER NOT NULL DEFAULT 0,
       next_attempt_at TEXT,
@@ -215,6 +217,13 @@ function initSchema(db: SQLite.SQLiteDatabase): void {
   // Migración para installs que cachearon el evento antes de esta columna.
   // Nullable (sin default) → installs viejos quedan con NULL = sin form.
   addColumnIfMissing(db, 'cached_events', 'custom_form_fields_json', 'TEXT');
+
+  // P1: marca de excepción de la captura offline. El backend ya acepta
+  // isException/exceptionJustification; sin estas columnas las excepciones
+  // capturadas sin red subían como entregas NORMALES (sin audit ni aviso al
+  // coordinador). Default 0 = no-excepción → installs viejos quedan consistentes.
+  addColumnIfMissing(db, 'pending_deliveries', 'is_exception', 'INTEGER NOT NULL DEFAULT 0');
+  addColumnIfMissing(db, 'pending_deliveries', 'exception_justification', 'TEXT');
 }
 
 /**
@@ -302,6 +311,8 @@ export interface PendingDelivery {
   gpsAccuracy: number | null;
   gpsStatus: 'ok' | 'indeterminada';
   customFormData: Record<string, unknown> | null;
+  isException: boolean;
+  exceptionJustification: string | null;
   syncStatus: SyncStatus;
   retryCount: number;
   nextAttemptAt: string | null;
@@ -734,10 +745,11 @@ export function enqueueDelivery(d: PendingDelivery): void {
       `INSERT OR REPLACE INTO pending_deliveries
          (id, event_id, citizen_id, gestor_id, signature_data_url, signature_sha256,
           photo_data_url, photo_sha256, photo_size_kb, gps_lat, gps_lon,
-          gps_accuracy, gps_status, custom_form_data, sync_status, retry_count,
+          gps_accuracy, gps_status, custom_form_data, is_exception,
+          exception_justification, sync_status, retry_count,
           next_attempt_at, last_attempt_at, last_error, captured_at, synced_at,
           server_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         d.id,
         d.eventId,
@@ -753,6 +765,8 @@ export function enqueueDelivery(d: PendingDelivery): void {
         d.gpsAccuracy,
         d.gpsStatus,
         d.customFormData ? JSON.stringify(d.customFormData) : null,
+        d.isException ? 1 : 0,
+        d.exceptionJustification,
         d.syncStatus,
         d.retryCount,
         d.nextAttemptAt,
@@ -919,6 +933,8 @@ function rowToDelivery(row: Record<string, unknown>): PendingDelivery {
     gpsAccuracy: (row.gps_accuracy as number | null) ?? null,
     gpsStatus: row.gps_status as 'ok' | 'indeterminada',
     customFormData,
+    isException: (row.is_exception as number) === 1,
+    exceptionJustification: (row.exception_justification as string | null) ?? null,
     syncStatus: row.sync_status as SyncStatus,
     retryCount: (row.retry_count as number) ?? 0,
     nextAttemptAt: (row.next_attempt_at as string | null) ?? null,

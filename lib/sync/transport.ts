@@ -294,6 +294,15 @@ export async function uploadDelivery(
           status: d.gpsStatus,
         },
         customFormData: cleanedForm,
+        // P1: propagar la marca de excepción (Tipo A) para que el backend la
+        // registre como tal (audit + notificación al coordinador). El backend
+        // exige justificación ≥20 chars cuando isException=true.
+        ...(d.isException
+          ? {
+              isException: true,
+              exceptionJustification: d.exceptionJustification ?? undefined,
+            }
+          : {}),
       },
     );
     return { kind: 'ok', serverId: res.id };
