@@ -192,6 +192,14 @@ function initSchema(db: SQLite.SQLiteDatabase): void {
       archived_at TEXT NOT NULL,
       PRIMARY KEY (event_id, user_id)
     );
+
+    -- Eventos FIJADOS arriba por operador (local, por usuario+dispositivo).
+    CREATE TABLE IF NOT EXISTS pinned_events (
+      event_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      pinned_at TEXT NOT NULL,
+      PRIMARY KEY (event_id, user_id)
+    );
   `);
 
   // #2: migración ligera para installs existentes (la BD pudo crearse antes
@@ -448,6 +456,35 @@ export function listArchivedEventIds(userId: string): string[] {
   const db = getDB();
   const rows = db.getAllSync<{ event_id: string }>(
     `SELECT event_id FROM archived_events WHERE user_id = ?`,
+    [userId],
+  );
+  return rows.map((r) => r.event_id);
+}
+
+/** Fija un evento arriba para este usuario (local). */
+export function pinEventLocal(eventId: string, userId: string): void {
+  const db = getDB();
+  db.runSync(
+    `INSERT OR REPLACE INTO pinned_events (event_id, user_id, pinned_at)
+     VALUES (?, ?, ?)`,
+    [eventId, userId, new Date().toISOString()],
+  );
+}
+
+/** Quita el fijado de un evento. */
+export function unpinEventLocal(eventId: string, userId: string): void {
+  const db = getDB();
+  db.runSync(`DELETE FROM pinned_events WHERE event_id = ? AND user_id = ?`, [
+    eventId,
+    userId,
+  ]);
+}
+
+/** IDs de eventos fijados arriba por este usuario. */
+export function listPinnedEventIds(userId: string): string[] {
+  const db = getDB();
+  const rows = db.getAllSync<{ event_id: string }>(
+    `SELECT event_id FROM pinned_events WHERE user_id = ?`,
     [userId],
   );
   return rows.map((r) => r.event_id);

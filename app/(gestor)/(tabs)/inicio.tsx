@@ -9,8 +9,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
   FlatList,
+  Modal,
   Pressable,
   RefreshControl,
   StyleSheet,
@@ -33,8 +33,11 @@ import {
   archiveEventLocal,
   listArchivedEventIds,
   listCachedEvents,
+  listPinnedEventIds,
+  pinEventLocal,
   saveCachedEvent,
   unarchiveEventLocal,
+  unpinEventLocal,
 } from '../../../lib/offline/db';
 import {
   colors,
@@ -77,14 +80,26 @@ export default function InicioTab() {
   const [query, setQuery] = useState('');
   const [view, setView] = useState<'active' | 'archived'>('active');
   const [archivedIds, setArchivedIds] = useState<Set<string>>(new Set());
+  const [pinnedIds, setPinnedIds] = useState<Set<string>>(new Set());
+  // Evento sobre el que está abierto el menú de acciones (long-press).
+  const [sheetEvent, setSheetEvent] = useState<EventSummary | null>(null);
 
   const userId = user?.id ?? '';
 
-  // Archivados localmente por este operador (declutter; no toca el evento global).
+  // Archivados + fijados localmente por este operador (no tocan el evento global).
   const loadArchived = useCallback(() => {
     if (!userId) return;
     try {
       setArchivedIds(new Set(listArchivedEventIds(userId)));
+    } catch {
+      /* noop */
+    }
+  }, [userId]);
+
+  const loadPinned = useCallback(() => {
+    if (!userId) return;
+    try {
+      setPinnedIds(new Set(listPinnedEventIds(userId)));
     } catch {
       /* noop */
     }
@@ -185,8 +200,9 @@ export default function InicioTab() {
   };
 
   useEffect(() => {
-    // 0. Archivados locales (sincrónico)
+    // 0. Archivados + fijados locales (sincrónico)
     loadArchived();
+    loadPinned();
     // 1. Cargar cache inmediatamente (sincrónico, sin red)
     loadFromCache();
     setLoading(false); // ya tenemos datos del cache, no bloqueamos UI
@@ -200,33 +216,34 @@ export default function InicioTab() {
     void load();
   };
 
-  // Archivar / desarchivar (local).
-  const toggleArchive = (ev: EventSummary, isArchived: boolean) => {
+  // Acciones desde el menú (sheet) de un evento. No tocan el evento global.
+  const toggleArchive = (ev: EventSummary) => {
     if (!userId) return;
     try {
-      if (isArchived) unarchiveEventLocal(ev.id, userId);
-      else archiveEventLocal(ev.id, userId);
+      if (archivedIds.has(ev.id)) {
+        unarchiveEventLocal(ev.id, userId);
+      } else {
+        archiveEventLocal(ev.id, userId);
+        unpinEventLocal(ev.id, userId); // al archivar, también se quita el fijado
+      }
       loadArchived();
+      loadPinned();
     } catch {
       /* noop */
     }
+    setSheetEvent(null);
   };
 
-  const onLongPressEvent = (ev: EventSummary) => {
-    const isArchived = archivedIds.has(ev.id);
-    Alert.alert(
-      ev.name,
-      isArchived
-        ? 'Este evento está archivado. ¿Desarchivar? Volverá a tu lista de activos.'
-        : '¿Archivar este evento? Se ocultará de tu lista (queda guardado y puedes desarchivarlo cuando quieras).',
-      [
-        { text: 'Cancelar', style: 'cancel' },
-        {
-          text: isArchived ? 'Desarchivar' : 'Archivar',
-          onPress: () => toggleArchive(ev, isArchived),
-        },
-      ],
-    );
+  const togglePin = (ev: EventSummary) => {
+    if (!userId) return;
+    try {
+      if (pinnedIds.has(ev.id)) unpinEventLocal(ev.id, userId);
+      else pinEventLocal(ev.id, userId);
+      loadPinned();
+    } catch {
+      /* noop */
+    }
+    setSheetEvent(null);
   };
 
   const archivedCount = useMemo(
@@ -236,10 +253,14 @@ export default function InicioTab() {
   const activeCount = events.length - archivedCount;
   const showArchiveTab = archivedCount > 0 || view === 'archived';
 
-  // Lista visible = vista (activos/archivados) + búsqueda + orden por fecha.
+  // Lista visible = vista + búsqueda + (fijados arriba en activos) + orden fecha.
   // "Próximos" = startDate asc; "Recientes" = endDate desc.
   const visibleEvents = useMemo(() => {
     const q = normalizeText(query.trim());
+    const byDate = (a: EventSummary, b: EventSummary) =>
+      sortMode === 'upcoming'
+        ? new Date(a.startDate).getTime() - new Date(b.startDate).getTime()
+        : new Date(b.endDate).getTime() - new Date(a.endDate).getTime();
     return events
       .filter((e) =>
         view === 'archived' ? archivedIds.has(e.id) : !archivedIds.has(e.id),
@@ -250,12 +271,15 @@ export default function InicioTab() {
           normalizeText(e.name).includes(q) ||
           normalizeText(e.municipio).includes(q),
       )
-      .sort((a, b) =>
-        sortMode === 'upcoming'
-          ? new Date(a.startDate).getTime() - new Date(b.startDate).getTime()
-          : new Date(b.endDate).getTime() - new Date(a.endDate).getTime(),
-      );
-  }, [events, archivedIds, view, query, sortMode]);
+      .sort((a, b) => {
+        if (view === 'active') {
+          const pa = pinnedIds.has(a.id) ? 1 : 0;
+          const pb = pinnedIds.has(b.id) ? 1 : 0;
+          if (pa !== pb) return pb - pa; // fijados primero
+        }
+        return byDate(a, b);
+      });
+  }, [events, archivedIds, pinnedIds, view, query, sortMode]);
 
   if (loading) {
     return (
@@ -387,7 +411,7 @@ export default function InicioTab() {
                 ? `${visibleEvents.length} resultado${visibleEvents.length === 1 ? '' : 's'}`
                 : activeCount === 0
                   ? 'No tienes eventos activos'
-                  : `${activeCount} evento${activeCount === 1 ? '' : 's'} activo${activeCount === 1 ? '' : 's'} · mantén presionado para archivar`}
+                  : `${activeCount} evento${activeCount === 1 ? '' : 's'} activo${activeCount === 1 ? '' : 's'} · mantén presionado para fijar o archivar`}
           </Text>
         }
         ListEmptyComponent={
@@ -422,8 +446,8 @@ export default function InicioTab() {
               onPress={() => {
                 router.push(`/event/${item.id}` as never);
               }}
-              onLongPress={() => onLongPressEvent(item)}
-              delayLongPress={350}
+              onLongPress={() => setSheetEvent(item)}
+              delayLongPress={300}
               style={({ pressed }) => [
                 styles.eventCard,
                 pressed && { opacity: 0.85 },
@@ -431,6 +455,7 @@ export default function InicioTab() {
             >
               <View style={styles.eventHeader}>
                 <Text style={styles.eventName} numberOfLines={2}>
+                  {pinnedIds.has(item.id) ? '📌 ' : ''}
                   {item.name}
                 </Text>
                 <View
@@ -502,6 +527,55 @@ export default function InicioTab() {
           );
         }}
       />
+
+      {/* Menú de acciones (reemplaza el Alert plano): fijar / archivar */}
+      <Modal
+        visible={sheetEvent !== null}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setSheetEvent(null)}
+      >
+        <Pressable style={styles.sheetBackdrop} onPress={() => setSheetEvent(null)}>
+          {/* El tap dentro del sheet no cierra */}
+          <Pressable style={styles.sheet} onPress={() => undefined}>
+            <View style={styles.sheetHandle} />
+            <Text style={styles.sheetTitle} numberOfLines={2}>
+              {sheetEvent?.name}
+            </Text>
+            {!!sheetEvent?.municipio && (
+              <Text style={styles.sheetSub}>{sheetEvent.municipio}</Text>
+            )}
+
+            {sheetEvent && !archivedIds.has(sheetEvent.id) && (
+              <Pressable
+                style={({ pressed }) => [styles.sheetAction, pressed && styles.sheetActionPressed]}
+                onPress={() => togglePin(sheetEvent)}
+              >
+                <Text style={styles.sheetActionIcon}>📌</Text>
+                <Text style={styles.sheetActionText}>
+                  {pinnedIds.has(sheetEvent.id) ? 'Quitar de arriba' : 'Fijar arriba'}
+                </Text>
+              </Pressable>
+            )}
+
+            <Pressable
+              style={({ pressed }) => [styles.sheetAction, pressed && styles.sheetActionPressed]}
+              onPress={() => sheetEvent && toggleArchive(sheetEvent)}
+            >
+              <Text style={styles.sheetActionIcon}>🗄️</Text>
+              <Text style={styles.sheetActionText}>
+                {sheetEvent && archivedIds.has(sheetEvent.id)
+                  ? 'Desarchivar (volver a la lista)'
+                  : 'Archivar (ocultar de la lista)'}
+              </Text>
+            </Pressable>
+
+            <Pressable style={styles.sheetCancel} onPress={() => setSheetEvent(null)}>
+              <Text style={styles.sheetCancelText}>Cancelar</Text>
+            </Pressable>
+          </Pressable>
+        </Pressable>
+      </Modal>
     </Screen>
   );
 }
@@ -633,6 +707,71 @@ const styles = StyleSheet.create({
   },
   searchClearText: {
     color: colors.textMuted,
+    fontSize: fontSizes.md,
+    fontWeight: fontWeights.bold,
+  },
+  sheetBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    justifyContent: 'flex-end',
+  },
+  sheet: {
+    backgroundColor: colors.bgCard,
+    borderTopLeftRadius: radii.lg,
+    borderTopRightRadius: radii.lg,
+    paddingHorizontal: spacing.lg,
+    paddingTop: spacing.sm,
+    paddingBottom: spacing.xl,
+    borderTopWidth: 1,
+    borderColor: colors.border,
+  },
+  sheetHandle: {
+    alignSelf: 'center',
+    width: 40,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: colors.border,
+    marginBottom: spacing.md,
+  },
+  sheetTitle: {
+    color: colors.textPrimary,
+    fontSize: fontSizes.md,
+    fontWeight: fontWeights.bold,
+  },
+  sheetSub: {
+    color: colors.textMuted,
+    fontSize: fontSizes.sm,
+    marginTop: 2,
+    marginBottom: spacing.sm,
+  },
+  sheetAction: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+    paddingVertical: spacing.md,
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+  },
+  sheetActionPressed: {
+    backgroundColor: colors.bgInput,
+  },
+  sheetActionIcon: {
+    fontSize: 18,
+  },
+  sheetActionText: {
+    color: colors.textPrimary,
+    fontSize: fontSizes.md,
+    fontWeight: fontWeights.semibold,
+  },
+  sheetCancel: {
+    marginTop: spacing.md,
+    alignItems: 'center',
+    paddingVertical: spacing.md,
+    borderRadius: radii.md,
+    backgroundColor: colors.bgInput,
+  },
+  sheetCancelText: {
+    color: colors.textSecondary,
     fontSize: fontSizes.md,
     fontWeight: fontWeights.bold,
   },
