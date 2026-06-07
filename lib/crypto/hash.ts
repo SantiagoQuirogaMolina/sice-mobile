@@ -63,12 +63,15 @@ export async function sha256OfDataUrl(dataUrl: string): Promise<string> {
 }
 
 /**
- * Hash compuesto del delivery — mismo formato que el backend en
- * deliveries.service.ts composeHash:
+ * Referencia LOCAL del delivery (NO es el sello verificable del servidor).
+ *
  *   sha256( citizenId | eventId | capturedAt | signatureSha256 | photoSha256 )
  *
- * El backend lo recalcula y rechaza si no coincide. Lo computamos en
- * cliente para mostrar el ID corto en pantalla de éxito sin esperar al sync.
+ * IMPORTANTE: el servidor sella con composeEvidenceHash **v2** (prefijo de
+ * versión, capturedAt en epoch ms, + selfie/audio/GPS/formulario), así que este
+ * hash NO coincide con el composedHash que se verifica públicamente. Se usa solo
+ * como ID corto de confirmación inmediata en la pantalla de éxito; la
+ * verificación pública usa el sello del servidor (en el comprobante).
  */
 export async function sha256OfDelivery(input: {
   citizenId: string;

@@ -264,8 +264,10 @@ export default function DeliveryWizardScreen() {
     setSubmitting(true);
     try {
       const capturedAt = new Date().toISOString();
-      // Hash con '' para evidencia ausente — idéntico al composeHash del
-      // backend (que usa `?? ''`), así el hash compuesto coincide.
+      // Referencia LOCAL (no es el sello del servidor): el backend sella con
+      // composeEvidenceHash v2 (prefijo de versión, capturedAt en epoch ms, +
+      // selfie/audio/GPS/formulario), así que este hash v1 NO coincide con el
+      // composedHash verificable. Se usa solo como ID corto de confirmación.
       const hash = await sha256OfDelivery({
         citizenId: beneficiary.citizenId,
         eventId,
@@ -1134,14 +1136,21 @@ function SuccessStep({
           SICE-{offlineId.slice(0, 8).toUpperCase()}
         </Text>
         <View style={styles.divider} />
-        <Text style={styles.successLabel}>Hash compuesto</Text>
+        <Text style={styles.successLabel}>Referencia local</Text>
         {citizenIsLocal ? (
           <Text style={styles.successPendingHash}>
-            Se generará al sincronizar (el ID definitivo del ciudadano se
-            asigna en el servidor).
+            El sello verificable se genera al sincronizar (el ID definitivo del
+            ciudadano se asigna en el servidor).
           </Text>
         ) : (
-          <Text style={styles.successMono}>{shortHash(composedHash, 8, 6)}</Text>
+          <>
+            <Text style={styles.successMono}>{shortHash(composedHash, 8, 6)}</Text>
+            <Text style={styles.successPendingHash}>
+              Referencia local de confirmación. El sello verificable
+              públicamente lo genera el servidor al sincronizar y queda en el
+              comprobante.
+            </Text>
+          </>
         )}
         <View style={styles.divider} />
         <Text style={styles.successLabel}>Estado</Text>
