@@ -77,6 +77,11 @@ export interface EventSummary {
   requirePhoto: boolean;
   requireGps: boolean;
   captureDomicilio: boolean;
+  /** El operador puede crear instancias (sesiones) de este evento. */
+  allowOperatorInstances: boolean;
+  /** Serie recurrente: agrupa instancias. seriesPosition>1 ⇒ es una sesión/instancia. */
+  seriesId?: string | null;
+  seriesPosition?: number | null;
   totalBeneficiaries: number;
   totalDelivered: number;
   /** Campos del formulario dinámico (Tipo B). Vacío en Tipo A o sin form. */
@@ -114,6 +119,9 @@ interface BackendEvent {
   requirePhoto?: boolean;
   requireGps?: boolean;
   captureDomicilio?: boolean;
+  allowOperatorInstances?: boolean;
+  seriesId?: string | null;
+  seriesPosition?: number | null;
   totalBeneficiaries: number;
   totalDelivered: number;
   customForm?: { fields: BackendFormField[] } | null;
@@ -163,6 +171,9 @@ function mapEvent(b: BackendEvent): EventSummary {
     requirePhoto: b.requirePhoto ?? true,
     requireGps: b.requireGps ?? true,
     captureDomicilio: b.captureDomicilio ?? false,
+    allowOperatorInstances: b.allowOperatorInstances ?? false,
+    seriesId: b.seriesId ?? null,
+    seriesPosition: b.seriesPosition ?? null,
     totalBeneficiaries: b.totalBeneficiaries,
     totalDelivered: b.totalDelivered,
     customFormFields: mapFormFields(b.customForm),
@@ -234,6 +245,32 @@ export const eventsService = {
     }
   },
 
+  /**
+   * El operador crea una INSTANCIA (sesión) del evento (requiere red). Nace
+   * activa para capturar de inmediato. Devuelve el evento creado.
+   */
+  async createInstance(
+    parentId: string,
+    input: { startDate?: string; endDate?: string; name?: string } = {},
+  ): Promise<EventSummary> {
+    const data = await api.post<BackendEvent>(`/api/v1/events/${parentId}/instances`, {
+      startDate: input.startDate,
+      endDate: input.endDate,
+      name: input.name,
+    });
+    const summary = mapEvent(data);
+    saveCachedEvent(toCached(summary, null));
+    return summary;
+  },
+
+  /** Cierra (completed) una instancia/sesión al terminar de llenarla (requiere red). */
+  async closeInstance(id: string): Promise<EventSummary> {
+    const data = await api.patch<BackendEvent>(`/api/v1/events/${id}/close-instance`, {});
+    const summary = mapEvent(data);
+    saveCachedEvent(toCached(summary, null));
+    return summary;
+  },
+
   async listSectors(eventId: string): Promise<SectorInfo[]> {
     const items = await api.get<BackendSector[]>(
       `/api/v1/events/${eventId}/sectors`,
@@ -293,6 +330,10 @@ function fromCached(c: CachedEvent): EventSummary {
     requirePhoto: c.requirePhoto,
     requireGps: c.requireGps,
     captureDomicilio: c.captureDomicilio,
+    // No se cachean (crear/cerrar instancia requiere red); default seguro offline.
+    allowOperatorInstances: false,
+    seriesId: null,
+    seriesPosition: null,
     totalBeneficiaries: c.totalBeneficiaries,
     totalDelivered: c.totalDelivered,
     customFormFields: parseCustomFormFields(c.customFormFieldsJson),

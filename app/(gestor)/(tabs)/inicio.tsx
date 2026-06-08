@@ -135,6 +135,8 @@ export default function InicioTab() {
           requirePhoto: c.requirePhoto,
           requireGps: c.requireGps,
           captureDomicilio: c.captureDomicilio,
+          // No se cachea (crear/cerrar instancia requiere red); default offline.
+          allowOperatorInstances: false,
           totalBeneficiaries: c.totalBeneficiaries,
           totalDelivered: c.totalDelivered,
           customFormFields: parseCachedFormFields(c.customFormFieldsJson),

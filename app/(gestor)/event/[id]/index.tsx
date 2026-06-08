@@ -17,6 +17,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import {
+  Alert,
   Pressable,
   RefreshControl,
   ScrollView,
@@ -56,6 +57,7 @@ export default function EventDetail() {
   });
   const [loading, setLoading] = useState(true);
   const [loadedCount, setLoadedCount] = useState(0);
+  const [instanceBusy, setInstanceBusy] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [bannerError, setBannerError] = useState<string | null>(null);
 
@@ -95,6 +97,57 @@ export default function EventDetail() {
       setLoading(false);
       setRefreshing(false);
     }
+  };
+
+  // El operador crea una NUEVA sesión (instancia) del evento (requiere red).
+  const handleNewInstance = () => {
+    Alert.alert(
+      'Nueva sesión',
+      'Se creará una sesión nueva (con la fecha de hoy) para registrar asistencia. Consume un cupo del plan. ¿Continuar?',
+      [
+        { text: 'Cancelar', style: 'cancel' },
+        {
+          text: 'Crear sesión',
+          onPress: async () => {
+            setInstanceBusy(true);
+            try {
+              const inst = await eventsService.createInstance(id);
+              router.replace(`/event/${inst.id}` as never);
+            } catch (e) {
+              setBannerError(apiErrorMessage(e, 'No se pudo crear la sesión. Revisa tu conexión.'));
+            } finally {
+              setInstanceBusy(false);
+            }
+          },
+        },
+      ],
+    );
+  };
+
+  // El operador CIERRA la sesión al terminar de llenar la planilla (requiere red).
+  const handleCloseInstance = () => {
+    Alert.alert(
+      'Cerrar sesión',
+      'Se cerrará esta sesión y ya no podrás registrar más asistencia en ella. ¿Continuar?',
+      [
+        { text: 'Cancelar', style: 'cancel' },
+        {
+          text: 'Cerrar',
+          style: 'destructive',
+          onPress: async () => {
+            setInstanceBusy(true);
+            try {
+              await eventsService.closeInstance(id);
+              await load();
+            } catch (e) {
+              setBannerError(apiErrorMessage(e, 'No se pudo cerrar la sesión. Revisa tu conexión.'));
+            } finally {
+              setInstanceBusy(false);
+            }
+          },
+        },
+      ],
+    );
   };
 
   useEffect(() => {
@@ -208,6 +261,16 @@ export default function EventDetail() {
           </View>
         )}
 
+        {/* Indicador: la lista ya está descargada y disponible sin conexión. */}
+        {counts.total > 0 && (
+          <View style={styles.offlineChip}>
+            <Text style={styles.offlineChipText}>
+              ✓ Disponible sin conexión · {counts.total.toLocaleString('es-CO')} en este
+              dispositivo
+            </Text>
+          </View>
+        )}
+
         {/* Hero — progreso del día */}
         <View style={styles.hero}>
           <Text style={styles.heroLabel}>Progreso de mi lista</Text>
@@ -314,6 +377,27 @@ export default function EventDetail() {
                 onPress={() => {
                   router.push(`/event/${event.id}/exception` as never);
                 }}
+              />
+            </View>
+          )}
+          {/* Eventos recurrentes: el operador abre una NUEVA sesión (instancia)
+              cuando la dicta, si el evento lo permite. */}
+          {event.allowOperatorInstances && !isCompleted && (
+            <View style={{ marginTop: spacing.sm }}>
+              <Button
+                label={instanceBusy ? 'Creando sesión…' : '+ Nueva sesión'}
+                variant="primary"
+                onPress={handleNewInstance}
+              />
+            </View>
+          )}
+          {/* Cerrar la sesión (instancia, posición > 1) al terminar la planilla. */}
+          {event.status === 'active' && (event.seriesPosition ?? 0) > 1 && (
+            <View style={{ marginTop: spacing.sm }}>
+              <Button
+                label={instanceBusy ? 'Cerrando…' : 'Cerrar sesión'}
+                variant="secondary"
+                onPress={handleCloseInstance}
               />
             </View>
           )}
@@ -477,6 +561,21 @@ const styles = StyleSheet.create({
   softBannerText: {
     color: colors.textMuted,
     fontSize: fontSizes.xs,
+  },
+  offlineChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    backgroundColor: colors.successBg,
+    borderRadius: radii.full,
+    paddingHorizontal: spacing.md,
+    paddingVertical: 6,
+    marginBottom: spacing.sm,
+  },
+  offlineChipText: {
+    color: colors.success,
+    fontSize: fontSizes.xs,
+    fontWeight: fontWeights.semibold,
   },
   hero: {
     backgroundColor: colors.bgCard,
