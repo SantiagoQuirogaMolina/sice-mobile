@@ -17,7 +17,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import {
-  Alert,
+  Modal,
   Pressable,
   RefreshControl,
   ScrollView,
@@ -58,6 +58,7 @@ export default function EventDetail() {
   const [loading, setLoading] = useState(true);
   const [loadedCount, setLoadedCount] = useState(0);
   const [instanceBusy, setInstanceBusy] = useState(false);
+  const [confirm, setConfirm] = useState<null | 'new' | 'close'>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [bannerError, setBannerError] = useState<string | null>(null);
 
@@ -99,55 +100,32 @@ export default function EventDetail() {
     }
   };
 
-  // El operador crea una NUEVA sesión (instancia) del evento (requiere red).
-  const handleNewInstance = () => {
-    Alert.alert(
-      'Nueva sesión',
-      'Se creará una sesión nueva (con la fecha de hoy) para registrar asistencia. Consume un cupo del plan. ¿Continuar?',
-      [
-        { text: 'Cancelar', style: 'cancel' },
-        {
-          text: 'Crear sesión',
-          onPress: async () => {
-            setInstanceBusy(true);
-            try {
-              const inst = await eventsService.createInstance(id);
-              router.replace(`/event/${inst.id}` as never);
-            } catch (e) {
-              setBannerError(apiErrorMessage(e, 'No se pudo crear la sesión. Revisa tu conexión.'));
-            } finally {
-              setInstanceBusy(false);
-            }
-          },
-        },
-      ],
-    );
+  // Crea la nueva sesión (instancia). Requiere red; copia la lista del programa.
+  const runNewInstance = async () => {
+    setConfirm(null);
+    setInstanceBusy(true);
+    try {
+      const inst = await eventsService.createInstance(id);
+      router.replace(`/event/${inst.id}` as never);
+    } catch (e) {
+      setBannerError(apiErrorMessage(e, 'No se pudo crear la sesión. Revisa tu conexión.'));
+    } finally {
+      setInstanceBusy(false);
+    }
   };
 
-  // El operador CIERRA la sesión al terminar de llenar la planilla (requiere red).
-  const handleCloseInstance = () => {
-    Alert.alert(
-      'Cerrar sesión',
-      'Se cerrará esta sesión y ya no podrás registrar más asistencia en ella. ¿Continuar?',
-      [
-        { text: 'Cancelar', style: 'cancel' },
-        {
-          text: 'Cerrar',
-          style: 'destructive',
-          onPress: async () => {
-            setInstanceBusy(true);
-            try {
-              await eventsService.closeInstance(id);
-              await load();
-            } catch (e) {
-              setBannerError(apiErrorMessage(e, 'No se pudo cerrar la sesión. Revisa tu conexión.'));
-            } finally {
-              setInstanceBusy(false);
-            }
-          },
-        },
-      ],
-    );
+  // Cierra la sesión al terminar de llenar la planilla. Requiere red.
+  const runCloseInstance = async () => {
+    setConfirm(null);
+    setInstanceBusy(true);
+    try {
+      await eventsService.closeInstance(id);
+      await load();
+    } catch (e) {
+      setBannerError(apiErrorMessage(e, 'No se pudo cerrar la sesión. Revisa tu conexión.'));
+    } finally {
+      setInstanceBusy(false);
+    }
   };
 
   useEffect(() => {
@@ -387,7 +365,7 @@ export default function EventDetail() {
               <Button
                 label={instanceBusy ? 'Creando sesión…' : '+ Nueva sesión'}
                 variant="primary"
-                onPress={handleNewInstance}
+                onPress={() => setConfirm('new')}
               />
             </View>
           )}
@@ -397,7 +375,7 @@ export default function EventDetail() {
               <Button
                 label={instanceBusy ? 'Cerrando…' : 'Cerrar sesión'}
                 variant="secondary"
-                onPress={handleCloseInstance}
+                onPress={() => setConfirm('close')}
               />
             </View>
           )}
@@ -427,6 +405,44 @@ export default function EventDetail() {
           <InfoRow label="Municipio" value={event.municipio || '—'} />
         </View>
       </ScrollView>
+
+      {/* Modal de confirmación (Nueva sesión / Cerrar sesión) — estilizado,
+          con copy para el operador (no menciona "cupo"). */}
+      <Modal
+        visible={confirm !== null}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setConfirm(null)}
+      >
+        <Pressable style={styles.confirmBackdrop} onPress={() => setConfirm(null)}>
+          <Pressable style={styles.confirmCard} onPress={() => {}}>
+            <Text style={styles.confirmTitle}>
+              {confirm === 'new' ? 'Nueva sesión' : 'Cerrar sesión'}
+            </Text>
+            <Text style={styles.confirmBody}>
+              {confirm === 'new'
+                ? 'Se abrirá una sesión nueva con la fecha de hoy y la lista de beneficiarios del programa, lista para tomar asistencia.'
+                : 'Se cerrará esta sesión. Ya no podrás registrar más asistencia en ella; quedará guardada en el historial.'}
+            </Text>
+            <View style={styles.confirmActions}>
+              <Pressable
+                onPress={() => setConfirm(null)}
+                style={({ pressed }) => [styles.confirmCancel, pressed && { opacity: 0.7 }]}
+              >
+                <Text style={styles.confirmCancelText}>Cancelar</Text>
+              </Pressable>
+              <Pressable
+                onPress={confirm === 'new' ? runNewInstance : runCloseInstance}
+                style={({ pressed }) => [styles.confirmOk, pressed && { opacity: 0.85 }]}
+              >
+                <Text style={styles.confirmOkText}>
+                  {confirm === 'new' ? 'Crear sesión' : 'Cerrar sesión'}
+                </Text>
+              </Pressable>
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
     </Screen>
   );
 }
@@ -576,6 +592,60 @@ const styles = StyleSheet.create({
     color: colors.success,
     fontSize: fontSizes.xs,
     fontWeight: fontWeights.semibold,
+  },
+  confirmBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: spacing.xl,
+  },
+  confirmCard: {
+    width: '100%',
+    maxWidth: 360,
+    backgroundColor: colors.bgCard,
+    borderRadius: radii.lg,
+    borderWidth: 1,
+    borderColor: colors.border,
+    padding: spacing.lg,
+  },
+  confirmTitle: {
+    color: colors.textPrimary,
+    fontSize: fontSizes.lg,
+    fontWeight: fontWeights.bold,
+    marginBottom: spacing.sm,
+  },
+  confirmBody: {
+    color: colors.textSecondary,
+    fontSize: fontSizes.sm,
+    lineHeight: 20,
+    marginBottom: spacing.lg,
+  },
+  confirmActions: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    gap: spacing.sm,
+  },
+  confirmCancel: {
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.sm,
+    borderRadius: radii.full,
+  },
+  confirmCancelText: {
+    color: colors.textSecondary,
+    fontSize: fontSizes.sm,
+    fontWeight: fontWeights.semibold,
+  },
+  confirmOk: {
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.sm,
+    borderRadius: radii.full,
+    backgroundColor: colors.cyan,
+  },
+  confirmOkText: {
+    color: colors.navyDark,
+    fontSize: fontSizes.sm,
+    fontWeight: fontWeights.bold,
   },
   hero: {
     backgroundColor: colors.bgCard,

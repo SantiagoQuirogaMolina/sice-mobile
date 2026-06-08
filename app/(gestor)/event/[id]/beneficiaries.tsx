@@ -71,9 +71,15 @@ export default function BeneficiariesScreen() {
     setFullList(searchBeneficiaries(eventId, '', 20000));
   };
 
-  // Initial mount: cargar de cache + traer del backend
+  // Initial mount: cargar de cache + traer del backend.
   useEffect(() => {
     refreshLocal();
+    // Si la lista YA está en el dispositivo, mostrarla de inmediato (sin la
+    // pantalla "Descargando"); el refresh del backend corre en segundo plano.
+    // Solo se ve "Descargando" la PRIMERA vez (cache vacío).
+    if (eventId && searchBeneficiaries(eventId, '', 1).length > 0) {
+      setLoading(false);
+    }
     void loadFromBackend().then(() => refreshLocal());
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [eventId]);
