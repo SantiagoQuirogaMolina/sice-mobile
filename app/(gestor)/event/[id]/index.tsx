@@ -17,7 +17,6 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import {
-  ActivityIndicator,
   Pressable,
   RefreshControl,
   ScrollView,
@@ -28,6 +27,7 @@ import {
 import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { Screen } from '../../../../components/Screen';
 import { Button } from '../../../../components/Button';
+import { DownloadProgress } from '../../../../components/DownloadProgress';
 import {
   eventsService,
   type EventSummary,
@@ -55,6 +55,7 @@ export default function EventDetail() {
     pendingSync: 0,
   });
   const [loading, setLoading] = useState(true);
+  const [loadedCount, setLoadedCount] = useState(0);
   const [refreshing, setRefreshing] = useState(false);
   const [bannerError, setBannerError] = useState<string | null>(null);
 
@@ -70,9 +71,14 @@ export default function EventDetail() {
       const ev = await eventsService.getById(id);
       setEvent(ev);
 
-      // 2. Beneficiarios al cache (background)
+      // 2. Mostrar el dashboard YA con lo cacheado (no bloquear en la descarga).
+      //    Si no hay nada cacheado todavía, dejamos el progreso visible.
+      refreshLocalCounts();
+      if (getEventCounts(id).total > 0) setLoading(false);
+
+      // 3. Descargar/actualizar TODA la lista en segundo plano (con progreso).
       try {
-        await beneficiariesService.listForEvent(id);
+        await beneficiariesService.listForEvent(id, (n) => setLoadedCount(n));
         setBannerError(null);
       } catch (e) {
         setBannerError(
@@ -83,7 +89,7 @@ export default function EventDetail() {
         );
       }
 
-      // 3. Re-leer counts del SQLite
+      // 4. Re-leer counts del SQLite (ahora completos)
       refreshLocalCounts();
     } finally {
       setLoading(false);
@@ -109,9 +115,7 @@ export default function EventDetail() {
   if (loading) {
     return (
       <Screen>
-        <View style={styles.center}>
-          <ActivityIndicator color={colors.cyan} size="large" />
-        </View>
+        <DownloadProgress count={loadedCount} />
       </Screen>
     );
   }

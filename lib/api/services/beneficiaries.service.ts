@@ -70,11 +70,16 @@ export const beneficiariesService = {
    * los beneficiarios donde assignedGestorId = me OR sectorId está en mis
    * sectores asignados (vía gestorIds de Sprint 7+).
    */
-  async listForEvent(eventId: string): Promise<CachedBeneficiary[]> {
+  async listForEvent(
+    eventId: string,
+    onProgress?: (loaded: number) => void,
+  ): Promise<CachedBeneficiary[]> {
     try {
       // Fetch-all paginado: el gestor debe descargar TODA su lista (miles) para
       // trabajar 100% offline, no solo la primera página. Paramos cuando una
       // página viene incompleta. Tope de seguridad: 50 páginas (100k).
+      // `onProgress` reporta el acumulado tras cada página → la UI muestra una
+      // barra de progreso y no se "siente trabada" con listas grandes.
       const PAGE = 2000;
       const all: BackendBeneficiary[] = [];
       for (let i = 0; i < 50; i++) {
@@ -82,6 +87,7 @@ export const beneficiariesService = {
           `/api/v1/events/${eventId}/beneficiaries?limit=${PAGE}&offset=${i * PAGE}`,
         );
         all.push(...page);
+        onProgress?.(all.length);
         if (page.length < PAGE) break;
       }
       const cached = all.map((b) => mapBeneficiary(b, eventId));

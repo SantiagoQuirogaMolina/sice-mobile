@@ -10,8 +10,8 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  ActivityIndicator,
   FlatList,
+  Modal,
   Pressable,
   RefreshControl,
   ScrollView,
@@ -20,6 +20,8 @@ import {
   TextInput,
   View,
 } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
+import { DownloadProgress } from '../../../../components/DownloadProgress';
 import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { Screen } from '../../../../components/Screen';
 import { beneficiariesService } from '../../../../lib/api/services/beneficiaries.service';
@@ -44,14 +46,16 @@ export default function BeneficiariesScreen() {
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState<Filter>('all');
   const [sectorFilter, setSectorFilter] = useState<string>('all');
+  const [sectorModalOpen, setSectorModalOpen] = useState(false);
   const [fullList, setFullList] = useState<CachedBeneficiary[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadedCount, setLoadedCount] = useState(0);
   const [refreshing, setRefreshing] = useState(false);
 
   const loadFromBackend = async () => {
     if (!eventId) return;
     try {
-      await beneficiariesService.listForEvent(eventId);
+      await beneficiariesService.listForEvent(eventId, (n) => setLoadedCount(n));
     } catch {
       // Cache ya está disponible si la red falla
     }
@@ -134,10 +138,7 @@ export default function BeneficiariesScreen() {
   if (loading) {
     return (
       <Screen>
-        <View style={styles.center}>
-          <ActivityIndicator color={colors.cyan} size="large" />
-          <Text style={styles.loadingText}>Cargando beneficiarios…</Text>
-        </View>
+        <DownloadProgress count={loadedCount} />
       </Screen>
     );
   }
@@ -170,27 +171,24 @@ export default function BeneficiariesScreen() {
         />
       </View>
 
-      {/* Filtro por sector (solo si tengo más de uno) — 100% offline */}
+      {/* Filtro por sector (solo si tengo más de uno) — dropdown 100% offline.
+          Un dropdown+modal aguanta nombres largos y muchos sectores sin
+          recortarse (los chips horizontales se encogían por el flex del Screen). */}
       {sectorOptions.length > 1 && (
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          contentContainerStyle={styles.sectorRow}
-        >
-          <FilterChip
-            label={`Todos los sectores · ${fullList.length}`}
-            active={sectorFilter === 'all'}
-            onPress={() => setSectorFilter('all')}
-          />
-          {sectorOptions.map((s) => (
-            <FilterChip
-              key={s.name}
-              label={`${s.name} · ${s.count}`}
-              active={sectorFilter === s.name}
-              onPress={() => setSectorFilter(s.name)}
-            />
-          ))}
-        </ScrollView>
+        <View style={styles.sectorWrap}>
+          <Pressable
+            onPress={() => setSectorModalOpen(true)}
+            style={({ pressed }) => [styles.sectorSelect, pressed && { opacity: 0.7 }]}
+          >
+            <Ionicons name="location-outline" size={16} color={colors.cyan} />
+            <Text style={styles.sectorSelectText} numberOfLines={1}>
+              {sectorFilter === 'all'
+                ? `Todos los sectores · ${fullList.length}`
+                : `${sectorFilter} · ${counts.all}`}
+            </Text>
+            <Ionicons name="chevron-down" size={16} color={colors.textMuted} />
+          </Pressable>
+        </View>
       )}
 
       {/* Chips filter */}
@@ -252,7 +250,80 @@ export default function BeneficiariesScreen() {
           />
         )}
       />
+
+      {/* Modal selector de sector — aguanta nombres largos + scroll */}
+      <Modal
+        visible={sectorModalOpen}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setSectorModalOpen(false)}
+      >
+        <Pressable
+          style={styles.sectorBackdrop}
+          onPress={() => setSectorModalOpen(false)}
+        >
+          <Pressable style={styles.sectorSheet} onPress={() => {}}>
+            <View style={styles.sectorSheetHandle} />
+            <Text style={styles.sectorSheetTitle}>Filtrar por sector</Text>
+            <ScrollView style={{ maxHeight: 420 }}>
+              <SectorOption
+                label="Todos los sectores"
+                count={fullList.length}
+                active={sectorFilter === 'all'}
+                onPress={() => {
+                  setSectorFilter('all');
+                  setSectorModalOpen(false);
+                }}
+              />
+              {sectorOptions.map((s) => (
+                <SectorOption
+                  key={s.name}
+                  label={s.name}
+                  count={s.count}
+                  active={sectorFilter === s.name}
+                  onPress={() => {
+                    setSectorFilter(s.name);
+                    setSectorModalOpen(false);
+                  }}
+                />
+              ))}
+            </ScrollView>
+          </Pressable>
+        </Pressable>
+      </Modal>
     </Screen>
+  );
+}
+
+function SectorOption({
+  label,
+  count,
+  active,
+  onPress,
+}: {
+  label: string;
+  count: number;
+  active: boolean;
+  onPress: () => void;
+}) {
+  return (
+    <Pressable
+      onPress={onPress}
+      style={({ pressed }) => [styles.sectorOption, pressed && { opacity: 0.6 }]}
+    >
+      <View style={{ flex: 1 }}>
+        <Text
+          style={[styles.sectorOptionLabel, active && { color: colors.cyan }]}
+          numberOfLines={2}
+        >
+          {label}
+        </Text>
+        <Text style={styles.sectorOptionCount}>
+          {count.toLocaleString('es-CO')} beneficiarios
+        </Text>
+      </View>
+      {active && <Ionicons name="checkmark" size={20} color={colors.cyan} />}
+    </Pressable>
   );
 }
 
@@ -361,16 +432,6 @@ function initials(name: string): string {
 }
 
 const styles = StyleSheet.create({
-  center: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: spacing.md,
-  },
-  loadingText: {
-    color: colors.textMuted,
-    fontSize: fontSizes.sm,
-  },
   header: {
     paddingHorizontal: spacing.lg,
     paddingTop: spacing.md,
@@ -415,11 +476,71 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.lg,
     paddingBottom: spacing.md,
   },
-  sectorRow: {
-    flexDirection: 'row',
-    gap: spacing.sm,
+  sectorWrap: {
     paddingHorizontal: spacing.lg,
     paddingBottom: spacing.sm,
+  },
+  sectorSelect: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    height: TOUCH_MIN,
+    paddingHorizontal: spacing.lg,
+    borderRadius: radii.full,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.bgInput,
+  },
+  sectorSelectText: {
+    flex: 1,
+    color: colors.textPrimary,
+    fontSize: fontSizes.sm,
+    fontWeight: fontWeights.semibold,
+  },
+  sectorBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    justifyContent: 'flex-end',
+  },
+  sectorSheet: {
+    backgroundColor: colors.bgCard,
+    borderTopLeftRadius: radii.xl,
+    borderTopRightRadius: radii.xl,
+    paddingHorizontal: spacing.lg,
+    paddingTop: spacing.sm,
+    paddingBottom: spacing.xl,
+  },
+  sectorSheetHandle: {
+    alignSelf: 'center',
+    width: 40,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: colors.borderStrong,
+    marginBottom: spacing.md,
+  },
+  sectorSheetTitle: {
+    color: colors.textPrimary,
+    fontSize: fontSizes.md,
+    fontWeight: fontWeights.bold,
+    marginBottom: spacing.sm,
+  },
+  sectorOption: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+    paddingVertical: spacing.md,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+  },
+  sectorOptionLabel: {
+    color: colors.textPrimary,
+    fontSize: fontSizes.md,
+    fontWeight: fontWeights.semibold,
+  },
+  sectorOptionCount: {
+    color: colors.textMuted,
+    fontSize: fontSizes.xs,
+    marginTop: 2,
   },
   chip: {
     paddingHorizontal: spacing.md,
