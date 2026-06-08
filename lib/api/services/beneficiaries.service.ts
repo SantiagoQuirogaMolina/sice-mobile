@@ -72,10 +72,19 @@ export const beneficiariesService = {
    */
   async listForEvent(eventId: string): Promise<CachedBeneficiary[]> {
     try {
-      const items = await api.get<BackendBeneficiary[]>(
-        `/api/v1/events/${eventId}/beneficiaries?limit=2000`,
-      );
-      const cached = items.map((b) => mapBeneficiary(b, eventId));
+      // Fetch-all paginado: el gestor debe descargar TODA su lista (miles) para
+      // trabajar 100% offline, no solo la primera página. Paramos cuando una
+      // página viene incompleta. Tope de seguridad: 50 páginas (100k).
+      const PAGE = 2000;
+      const all: BackendBeneficiary[] = [];
+      for (let i = 0; i < 50; i++) {
+        const page = await api.get<BackendBeneficiary[]>(
+          `/api/v1/events/${eventId}/beneficiaries?limit=${PAGE}&offset=${i * PAGE}`,
+        );
+        all.push(...page);
+        if (page.length < PAGE) break;
+      }
+      const cached = all.map((b) => mapBeneficiary(b, eventId));
       // Replace en el cache (función es safe — no hace wipe si vacío)
       replaceBeneficiariesByEvent(eventId, cached);
       return listBeneficiariesByEvent(eventId);

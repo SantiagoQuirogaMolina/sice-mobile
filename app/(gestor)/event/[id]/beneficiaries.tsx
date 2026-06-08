@@ -14,6 +14,7 @@ import {
   FlatList,
   Pressable,
   RefreshControl,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -42,7 +43,8 @@ export default function BeneficiariesScreen() {
   const router = useRouter();
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState<Filter>('all');
-  const [allList, setAllList] = useState<CachedBeneficiary[]>([]);
+  const [sectorFilter, setSectorFilter] = useState<string>('all');
+  const [fullList, setFullList] = useState<CachedBeneficiary[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
@@ -57,11 +59,12 @@ export default function BeneficiariesScreen() {
     setRefreshing(false);
   };
 
-  // Refresca el resultado de búsqueda cuando cambian query/filter o cache
+  // Carga TODA la lista cacheada del evento (offline). La búsqueda y los filtros
+  // (sector/estado) se aplican en JS sobre esta lista → funcionan 100% sin
+  // internet para TODA la lista asignada al gestor, sin tope de 200.
   const refreshLocal = () => {
     if (!eventId) return;
-    const items = searchBeneficiaries(eventId, query, 200);
-    setAllList(items);
+    setFullList(searchBeneficiaries(eventId, '', 20000));
   };
 
   // Initial mount: cargar de cache + traer del backend
@@ -71,12 +74,6 @@ export default function BeneficiariesScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [eventId]);
 
-  // Re-search cuando cambia el query
-  useEffect(() => {
-    refreshLocal();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [query]);
-
   // Refresca el cache local cada vez que la pantalla recupera el foco.
   // Importante: tras hacer una captura el wizard hace router.back() y
   // queremos que el beneficiario aparezca como "OK" inmediatamente sin
@@ -85,28 +82,54 @@ export default function BeneficiariesScreen() {
     useCallback(() => {
       refreshLocal();
       // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [eventId, query, filter]),
+    }, [eventId]),
   );
 
-  // Filtro por estado de entrega (sobre el resultado de la búsqueda)
-  const filtered = useMemo(() => {
-    if (filter === 'all') return allList;
-    return allList.filter((b) =>
-      filter === 'delivered'
-        ? b.deliveryStatus === 'delivered' || b.hasLocalDelivery
-        : b.deliveryStatus !== 'delivered' && !b.hasLocalDelivery,
-    );
-  }, [allList, filter]);
+  // Sectores únicos de mi lista (con conteo) para el filtro — offline.
+  const sectorOptions = useMemo(() => {
+    const c = new Map<string, number>();
+    for (const b of fullList) {
+      const key = b.sectorName ?? 'Sin sector';
+      c.set(key, (c.get(key) ?? 0) + 1);
+    }
+    return Array.from(c.entries())
+      .map(([name, count]) => ({ name, count }))
+      .sort((a, b) => a.name.localeCompare(b.name, 'es'));
+  }, [fullList]);
+
+  // Base filtrada por sector (los conteos y chips de estado se calculan sobre
+  // el sector elegido — si hay uno seleccionado).
+  const bySector = useMemo(
+    () =>
+      sectorFilter === 'all'
+        ? fullList
+        : fullList.filter((b) => (b.sectorName ?? 'Sin sector') === sectorFilter),
+    [fullList, sectorFilter],
+  );
 
   const counts = useMemo(() => {
     let pending = 0;
     let delivered = 0;
-    for (const b of allList) {
+    for (const b of bySector) {
       if (b.deliveryStatus === 'delivered' || b.hasLocalDelivery) delivered++;
       else pending++;
     }
-    return { all: allList.length, pending, delivered };
-  }, [allList]);
+    return { all: bySector.length, pending, delivered };
+  }, [bySector]);
+
+  // Búsqueda (documento/nombre) + estado, en JS sobre el sector elegido.
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase().replace(/[\s.\-_]/g, '');
+    const qName = query.trim().toLowerCase();
+    return bySector.filter((b) => {
+      const isDone = b.deliveryStatus === 'delivered' || b.hasLocalDelivery;
+      if (filter === 'delivered' && !isDone) return false;
+      if (filter === 'pending' && isDone) return false;
+      if (q && !b.documentNormalized.includes(q) && !b.nameNormalized.includes(qName))
+        return false;
+      return true;
+    });
+  }, [bySector, filter, query]);
 
   if (loading) {
     return (
@@ -146,6 +169,29 @@ export default function BeneficiariesScreen() {
           clearButtonMode="while-editing"
         />
       </View>
+
+      {/* Filtro por sector (solo si tengo más de uno) — 100% offline */}
+      {sectorOptions.length > 1 && (
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.sectorRow}
+        >
+          <FilterChip
+            label={`Todos los sectores · ${fullList.length}`}
+            active={sectorFilter === 'all'}
+            onPress={() => setSectorFilter('all')}
+          />
+          {sectorOptions.map((s) => (
+            <FilterChip
+              key={s.name}
+              label={`${s.name} · ${s.count}`}
+              active={sectorFilter === s.name}
+              onPress={() => setSectorFilter(s.name)}
+            />
+          ))}
+        </ScrollView>
+      )}
 
       {/* Chips filter */}
       <View style={styles.chipsRow}>
@@ -368,6 +414,12 @@ const styles = StyleSheet.create({
     gap: spacing.sm,
     paddingHorizontal: spacing.lg,
     paddingBottom: spacing.md,
+  },
+  sectorRow: {
+    flexDirection: 'row',
+    gap: spacing.sm,
+    paddingHorizontal: spacing.lg,
+    paddingBottom: spacing.sm,
   },
   chip: {
     paddingHorizontal: spacing.md,
