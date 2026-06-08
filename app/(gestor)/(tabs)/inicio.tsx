@@ -35,6 +35,7 @@ import {
   listCachedEvents,
   listPinnedEventIds,
   pinEventLocal,
+  pruneCachedEvents,
   saveCachedEvent,
   unarchiveEventLocal,
   unpinEventLocal,
@@ -186,6 +187,10 @@ export default function InicioTab() {
           lastSyncAt: new Date().toISOString(),
         });
       }
+      // Borrar del cache los eventos que el servidor ya NO devuelve (viejos / de
+      // pruebas anteriores) para que no reaparezcan offline. Conserva los que
+      // tengan capturas locales sin subir.
+      pruneCachedEvents(items.map((e) => e.id));
     } catch (e) {
       const isNetwork = e instanceof ApiError && e.code === 'NETWORK_ERROR';
       setError(

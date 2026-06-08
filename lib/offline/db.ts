@@ -18,6 +18,14 @@ let dbInstance: SQLite.SQLiteDatabase | null = null;
 const DB_NAME = 'sice-mobile.db';
 
 /**
+ * Versión del schema de las tablas de CACHE derivadas del servidor
+ * (cached_events / cached_beneficiaries). Súbela cuando cambien sus columnas:
+ * en el próximo arranque se recrean con el schema nuevo (los datos son siempre
+ * re-descargables). v2 = fix "siempre descargando" en installs actualizados.
+ */
+const CACHE_SCHEMA_VERSION = 2;
+
+/**
  * Abre la BD (idempotente). La crea si no existe + ejecuta migraciones.
  */
 export function getDB(): SQLite.SQLiteDatabase {
@@ -39,10 +47,26 @@ export function getDB(): SQLite.SQLiteDatabase {
  * agregamos ALTER TABLE en una rutina de migración separada.
  */
 function initSchema(db: SQLite.SQLiteDatabase): void {
-  db.execSync(`
-    PRAGMA journal_mode = WAL;
-    PRAGMA foreign_keys = ON;
+  db.execSync(`PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;`);
 
+  // Self-healing del cache (CRÍTICO offline): si la BD viene de una APK anterior
+  // cuyo schema de `cached_beneficiaries` tenía menos columnas (p. ej. sin
+  // sector_name/zona), el INSERT fallaba y la transacción hacía rollback → la
+  // lista NUNCA persistía ("siempre descargando" + offline sin datos). Versionamos
+  // el cache: si la versión guardada es menor que CACHE_SCHEMA_VERSION, recreamos
+  // SOLO las tablas derivadas del servidor (siempre re-descargables). NO tocamos
+  // las pending_* (capturas/ciudadanos locales SIN subir) ni los flags locales
+  // (archivados/pinned), para no perder trabajo offline del operador.
+  const cacheVer =
+    db.getFirstSync<{ user_version: number }>('PRAGMA user_version')?.user_version ?? 0;
+  if (cacheVer < CACHE_SCHEMA_VERSION) {
+    db.execSync(`
+      DROP TABLE IF EXISTS cached_beneficiaries;
+      DROP TABLE IF EXISTS cached_events;
+    `);
+  }
+
+  db.execSync(`
     CREATE TABLE IF NOT EXISTS cached_events (
       id TEXT PRIMARY KEY,
       tenant_id TEXT NOT NULL,
@@ -224,6 +248,11 @@ function initSchema(db: SQLite.SQLiteDatabase): void {
   // coordinador). Default 0 = no-excepción → installs viejos quedan consistentes.
   addColumnIfMissing(db, 'pending_deliveries', 'is_exception', 'INTEGER NOT NULL DEFAULT 0');
   addColumnIfMissing(db, 'pending_deliveries', 'exception_justification', 'TEXT');
+
+  // Sellar la versión del cache tras recrear/crear las tablas.
+  if (cacheVer < CACHE_SCHEMA_VERSION) {
+    db.execSync(`PRAGMA user_version = ${CACHE_SCHEMA_VERSION}`);
+  }
 }
 
 /**
@@ -439,6 +468,29 @@ export function listCachedEvents(): CachedEvent[] {
     customFormFieldsJson: (row.custom_form_fields_json as string | null) ?? null,
     lastSyncAt: (row.last_sync_at as string | null) ?? null,
   }));
+}
+
+/**
+ * Borra del cache los eventos que YA NO están en la lista fresca del servidor
+ * (eliminados/archivados o de pruebas viejas) para que no reaparezcan offline.
+ * Defensa: conserva eventos que aún tengan capturas locales SIN subir (para no
+ * perder evidencia pendiente). Borra también sus beneficiarios cacheados.
+ */
+export function pruneCachedEvents(keepIds: string[]): void {
+  const db = getDB();
+  const keep = new Set(keepIds);
+  const all = db.getAllSync<{ id: string }>(`SELECT id FROM cached_events`);
+  for (const row of all) {
+    if (keep.has(row.id)) continue;
+    const pend = db.getFirstSync<{ n: number }>(
+      `SELECT COUNT(*) AS n FROM pending_deliveries
+         WHERE event_id = ? AND sync_status IN ('pending','error','blocked','syncing')`,
+      [row.id],
+    );
+    if ((pend?.n ?? 0) > 0) continue; // capturas sin subir → conservar
+    db.runSync(`DELETE FROM cached_beneficiaries WHERE event_id = ?`, [row.id]);
+    db.runSync(`DELETE FROM cached_events WHERE id = ?`, [row.id]);
+  }
 }
 
 /* ─────────────────────── Archivado local por operador ─────────────────────── */
