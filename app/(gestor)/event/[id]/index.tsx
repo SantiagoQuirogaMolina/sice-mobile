@@ -61,6 +61,7 @@ export default function EventDetail() {
   const [confirm, setConfirm] = useState<null | 'new' | 'close'>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [bannerError, setBannerError] = useState<string | null>(null);
+  const [sessions, setSessions] = useState<EventSummary[]>([]);
 
   const refreshLocalCounts = () => {
     if (!id) return;
@@ -73,6 +74,16 @@ export default function EventDetail() {
       // 1. Detalle del evento (offline-first)
       const ev = await eventsService.getById(id);
       setEvent(ev);
+
+      // 1b. Si es parte de una serie, traer el historial de sesiones (red, best-effort).
+      if (ev?.seriesId) {
+        eventsService
+          .listInstances(ev.seriesId)
+          .then(setSessions)
+          .catch(() => {
+            /* sin red: se mantiene lo que haya */
+          });
+      }
 
       // 2. Mostrar el dashboard YA con lo cacheado (no bloquear en la descarga).
       //    Si no hay nada cacheado todavía, dejamos el progreso visible.
@@ -392,6 +403,54 @@ export default function EventDetail() {
           )}
         </View>
 
+        {/* Historial de sesiones de la serie: el operador ve todas las sesiones,
+            su asistencia (X/Y) y cuál está abierta. Toca una para abrirla. */}
+        {sessions.length > 1 && (
+          <View style={styles.infoCard}>
+            <Text style={styles.infoTitle}>Sesiones del programa ({sessions.length})</Text>
+            {sessions.map((s) => {
+              const isCurrent = s.id === id;
+              const open = s.status === 'active' || s.status === 'paused';
+              return (
+                <Pressable
+                  key={s.id}
+                  disabled={isCurrent}
+                  onPress={() => router.push(`/event/${s.id}` as never)}
+                  style={({ pressed }) => [
+                    styles.sessionRow,
+                    pressed && !isCurrent && { opacity: 0.7 },
+                  ]}
+                >
+                  <View style={{ flex: 1, minWidth: 0 }}>
+                    <Text style={styles.sessionName} numberOfLines={1}>
+                      Sesión {s.seriesPosition ?? 1}
+                      {isCurrent ? ' · esta' : ''}
+                    </Text>
+                    <Text style={styles.sessionMeta} numberOfLines={1}>
+                      {s.startDate.slice(0, 10)} · {s.totalDelivered}/{s.totalBeneficiaries} asistieron
+                    </Text>
+                  </View>
+                  <View
+                    style={[
+                      styles.sessionBadge,
+                      { backgroundColor: open ? colors.successBg : 'rgba(255,255,255,0.06)' },
+                    ]}
+                  >
+                    <Text
+                      style={[
+                        styles.sessionBadgeText,
+                        { color: open ? colors.success : colors.textMuted },
+                      ]}
+                    >
+                      {open ? 'Abierta' : 'Cerrada'}
+                    </Text>
+                  </View>
+                </Pressable>
+              );
+            })}
+          </View>
+        )}
+
         {/* Info evento */}
         <View style={styles.infoCard}>
           <Text style={styles.infoTitle}>Información del evento</Text>
@@ -421,7 +480,7 @@ export default function EventDetail() {
             </Text>
             <Text style={styles.confirmBody}>
               {confirm === 'new'
-                ? 'Se abrirá una sesión nueva con la fecha de hoy y la lista de beneficiarios del programa, lista para tomar asistencia.'
+                ? 'Se abrirá una sesión nueva (con la fecha de hoy) y la lista de beneficiarios, lista para tomar asistencia. La sesión anterior se cerrará automáticamente — solo queda abierta la última; su historial seguirá disponible.'
                 : 'Se cerrará esta sesión. Ya no podrás registrar más asistencia en ella; quedará guardada en el historial.'}
             </Text>
             <View style={styles.confirmActions}>
@@ -646,6 +705,33 @@ const styles = StyleSheet.create({
     color: colors.navyDark,
     fontSize: fontSizes.sm,
     fontWeight: fontWeights.bold,
+  },
+  sessionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    paddingVertical: spacing.sm,
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+  },
+  sessionName: {
+    color: colors.textPrimary,
+    fontSize: fontSizes.sm,
+    fontWeight: fontWeights.semibold,
+  },
+  sessionMeta: {
+    color: colors.textSecondary,
+    fontSize: fontSizes.xs,
+    marginTop: 2,
+  },
+  sessionBadge: {
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 3,
+    borderRadius: radii.full,
+  },
+  sessionBadgeText: {
+    fontSize: fontSizes.xs,
+    fontWeight: fontWeights.semibold,
   },
   hero: {
     backgroundColor: colors.bgCard,

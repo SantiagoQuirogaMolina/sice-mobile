@@ -263,6 +263,20 @@ export const eventsService = {
     return summary;
   },
 
+  /**
+   * Lista las sesiones de una serie/programa (programa + instancias), ordenadas
+   * por nº de sesión. Para que el operador vea el historial de sesiones y su
+   * asistencia. Requiere red.
+   */
+  async listInstances(seriesId: string): Promise<EventSummary[]> {
+    const items = await api.get<BackendEvent[]>(
+      `/api/v1/events?seriesId=${encodeURIComponent(seriesId)}&groupInstances=false&limit=200`,
+    );
+    return items
+      .map(mapEvent)
+      .sort((a, b) => (a.seriesPosition ?? 0) - (b.seriesPosition ?? 0));
+  },
+
   /** Cierra (completed) una instancia/sesión al terminar de llenarla (requiere red). */
   async closeInstance(id: string): Promise<EventSummary> {
     const data = await api.patch<BackendEvent>(`/api/v1/events/${id}/close-instance`, {});
