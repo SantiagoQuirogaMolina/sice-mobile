@@ -62,6 +62,8 @@ export default function EventDetail() {
   const [refreshing, setRefreshing] = useState(false);
   const [bannerError, setBannerError] = useState<string | null>(null);
   const [sessions, setSessions] = useState<EventSummary[]>([]);
+  const SESSIONS_PAGE = 5;
+  const [sessionsShown, setSessionsShown] = useState(SESSIONS_PAGE);
 
   const refreshLocalCounts = () => {
     if (!id) return;
@@ -211,10 +213,7 @@ export default function EventDetail() {
   const isCompleted = eventClosed || listFullyDelivered;
   const canCapture = !isDraft && !isCompleted && !programWithChildren && !isHistorical;
   const canCreateSession =
-    !!event.allowOperatorInstances &&
-    !eventClosed &&
-    !isDraft &&
-    (isOrigin || (lastActiveSession !== null && event.id === lastActiveSession.id));
+    !!event.allowOperatorInstances && !eventClosed && !isDraft && isOrigin;
 
   return (
     <Screen padding="none">
@@ -486,53 +485,83 @@ export default function EventDetail() {
           )}
         </View>
 
-        {/* Historial de sesiones de la serie: el operador ve todas las sesiones,
-            su asistencia (X/Y) y cuál está abierta. Toca una para abrirla. */}
-        {sessions.length > 1 && (
-          <View style={styles.infoCard}>
-            <Text style={styles.infoTitle}>Sesiones del programa ({sessions.length})</Text>
-            {sessions.map((s) => {
-              const isCurrent = s.id === id;
-              const open = s.status === 'active' || s.status === 'paused';
-              return (
-                <Pressable
-                  key={s.id}
-                  disabled={isCurrent}
-                  onPress={() => router.push(`/event/${s.id}` as never)}
-                  style={({ pressed }) => [
-                    styles.sessionRow,
-                    pressed && !isCurrent && { opacity: 0.7 },
-                  ]}
-                >
-                  <View style={{ flex: 1, minWidth: 0 }}>
-                    <Text style={styles.sessionName} numberOfLines={1}>
-                      Sesión {s.seriesPosition ?? 1}
-                      {isCurrent ? ' · esta' : ''}
-                    </Text>
-                    <Text style={styles.sessionMeta} numberOfLines={1}>
-                      {s.startDate.slice(0, 10)} · {s.totalDelivered}/{s.totalBeneficiaries} asistieron
-                    </Text>
-                  </View>
-                  <View
-                    style={[
-                      styles.sessionBadge,
-                      { backgroundColor: open ? colors.successBg : 'rgba(255,255,255,0.06)' },
-                    ]}
-                  >
-                    <Text
-                      style={[
-                        styles.sessionBadgeText,
-                        { color: open ? colors.success : colors.textMuted },
+        {/* Historial de sesiones: ordenado de MÁS RECIENTE a más antigua, paginado
+            (las recientes primero — útiles; las antiguas a "Ver más"). Evita listas
+            enormes en programas con 100+ sesiones. */}
+        {sessions.length > 1 &&
+          (() => {
+            const sorted = [...sessions].sort(
+              (a, b) => (b.seriesPosition ?? 0) - (a.seriesPosition ?? 0),
+            );
+            const visible = sorted.slice(0, sessionsShown);
+            const remaining = sorted.length - visible.length;
+            return (
+              <View style={styles.infoCard}>
+                <Text style={styles.infoTitle}>
+                  Sesiones del programa ({sessions.length})
+                </Text>
+                {visible.map((s) => {
+                  const isCurrent = s.id === id;
+                  const open = s.status === 'active' || s.status === 'paused';
+                  return (
+                    <Pressable
+                      key={s.id}
+                      disabled={isCurrent}
+                      onPress={() => router.push(`/event/${s.id}` as never)}
+                      style={({ pressed }) => [
+                        styles.sessionRow,
+                        pressed && !isCurrent && { opacity: 0.7 },
                       ]}
                     >
-                      {open ? 'Abierta' : 'Cerrada'}
+                      <View style={{ flex: 1, minWidth: 0 }}>
+                        <Text style={styles.sessionName} numberOfLines={1}>
+                          Sesión {s.seriesPosition ?? 1}
+                          {isCurrent ? ' · esta' : ''}
+                        </Text>
+                        <Text style={styles.sessionMeta} numberOfLines={1}>
+                          {s.startDate.slice(0, 10)} · {s.totalDelivered}/
+                          {s.totalBeneficiaries} asistieron
+                        </Text>
+                      </View>
+                      <View
+                        style={[
+                          styles.sessionBadge,
+                          {
+                            backgroundColor: open
+                              ? colors.successBg
+                              : 'rgba(255,255,255,0.06)',
+                          },
+                        ]}
+                      >
+                        <Text
+                          style={[
+                            styles.sessionBadgeText,
+                            { color: open ? colors.success : colors.textMuted },
+                          ]}
+                        >
+                          {open ? 'Abierta' : 'Cerrada'}
+                        </Text>
+                      </View>
+                    </Pressable>
+                  );
+                })}
+                {remaining > 0 && (
+                  <Pressable
+                    onPress={() => setSessionsShown((n) => n + SESSIONS_PAGE)}
+                    style={({ pressed }) => [
+                      styles.sessionMore,
+                      pressed && { opacity: 0.7 },
+                    ]}
+                  >
+                    <Text style={styles.sessionMoreText}>
+                      Ver {Math.min(remaining, SESSIONS_PAGE)} más
+                      {remaining > SESSIONS_PAGE ? ` (de ${remaining})` : ''}
                     </Text>
-                  </View>
-                </Pressable>
-              );
-            })}
-          </View>
-        )}
+                  </Pressable>
+                )}
+              </View>
+            );
+          })()}
 
         {/* Info evento */}
         <View style={styles.infoCard}>
@@ -827,6 +856,17 @@ const styles = StyleSheet.create({
   },
   contextBadgeText: {
     fontSize: fontSizes.xs,
+    fontWeight: fontWeights.semibold,
+  },
+  sessionMore: {
+    paddingVertical: spacing.sm,
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+    alignItems: 'center',
+  },
+  sessionMoreText: {
+    color: colors.cyan,
+    fontSize: fontSizes.sm,
     fontWeight: fontWeights.semibold,
   },
   hero: {
