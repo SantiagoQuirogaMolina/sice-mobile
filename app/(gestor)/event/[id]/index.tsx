@@ -181,13 +181,40 @@ export default function EventDetail() {
       ? Math.round((counts.delivered / counts.total) * 100)
       : 0;
 
-  // M1: gestor "completó" cuando ya no le quedan pendientes en la lista
-  // (Tipo A) o cuando el evento se cerró desde el backend.
-  const eventClosed =
-    event.status === 'completed' || event.status === 'archived';
+  // Estado del evento en el contexto de SERIE recurrente.
+  //  - eventClosed: el coordinador cerró el evento (acción manual, web).
+  //  - listFullyDelivered: solo aplica si NO es serie. En una serie con clases
+  //    recurrentes, llenar la planilla del primer día NO significa que la
+  //    serie terminó — solo significa que ese día asistieron todos.
+  //  - isOrigin: el evento es el PROGRAMA ORIGEN (pos=1 o sin serie).
+  //  - lastActiveSession: la sesión con mayor seriesPosition que sigue abierta.
+  //  - isHistorical: estamos en una sesión vieja (no la última) → solo lectura.
+  //  - programWithChildren: estamos en el programa origen y ya hay sesiones —
+  //    las capturas nuevas van a la sesión actual, NO al programa origen.
+  //  - canCapture: puedo capturar AQUÍ ahora mismo.
+  //  - canCreateSession: puedo abrir una sesión nueva DESDE aquí.
+  const eventClosed = event.status === 'completed' || event.status === 'archived';
+  const isSeriesMember = !!event.seriesId;
+  const seriesPos = event.seriesPosition ?? (isSeriesMember ? 1 : null);
+  const isOrigin = !isSeriesMember || seriesPos === 1;
+  const lastActiveSession = sessions
+    .filter((s) => s.status === 'active' || s.status === 'paused')
+    .reduce<EventSummary | null>(
+      (acc, s) => (!acc || (s.seriesPosition ?? 0) > (acc.seriesPosition ?? 0) ? s : acc),
+      null,
+    );
+  const programWithChildren = isOrigin && sessions.length > 1;
+  const isHistorical =
+    isSeriesMember && lastActiveSession !== null && event.id !== lastActiveSession.id;
   const listFullyDelivered =
-    event.type === 'A' && counts.total > 0 && counts.pending === 0;
+    !isSeriesMember && event.type === 'A' && counts.total > 0 && counts.pending === 0;
   const isCompleted = eventClosed || listFullyDelivered;
+  const canCapture = !isDraft && !isCompleted && !programWithChildren && !isHistorical;
+  const canCreateSession =
+    !!event.allowOperatorInstances &&
+    !eventClosed &&
+    !isDraft &&
+    (isOrigin || (lastActiveSession !== null && event.id === lastActiveSession.id));
 
   return (
     <Screen padding="none">
@@ -218,6 +245,45 @@ export default function EventDetail() {
           {event.type === 'A' ? 'Tipo A · lista' : 'Tipo B · auto-registro'}
         </Text>
 
+        {/* Etiqueta de contexto en serie: distingue programa origen, sesión
+            cerrada (histórico) o sesión actual — clave para que el operador
+            sepa dónde está capturando. */}
+        {isSeriesMember && (
+          <View
+            style={[
+              styles.contextBadge,
+              {
+                backgroundColor:
+                  programWithChildren || isHistorical
+                    ? 'rgba(255,255,255,0.06)'
+                    : colors.successBg,
+                borderColor:
+                  programWithChildren || isHistorical ? colors.border : colors.success,
+              },
+            ]}
+          >
+            <Text
+              style={[
+                styles.contextBadgeText,
+                {
+                  color:
+                    programWithChildren || isHistorical
+                      ? colors.textSecondary
+                      : colors.success,
+                },
+              ]}
+            >
+              {programWithChildren
+                ? `Programa origen · ${sessions.length} sesiones`
+                : isHistorical
+                  ? `Sesión ${seriesPos} · cerrada (histórico)`
+                  : isOrigin
+                    ? 'Programa origen'
+                    : `Sesión ${seriesPos} · en curso`}
+            </Text>
+          </View>
+        )}
+
         {/* Banner draft — bloqueo preventivo */}
         {isDraft && (
           <View style={styles.warningBanner}>
@@ -229,16 +295,39 @@ export default function EventDetail() {
           </View>
         )}
 
-        {/* Banner completado — el gestor ya terminó (M1) */}
-        {!isDraft && isCompleted && (
+        {/* Banner contextual: evento cerrado, lista completada, programa con
+            sesiones (captura va en la sesión actual) o sesión histórica. */}
+        {!isDraft && eventClosed && (
           <View style={styles.successBanner}>
-            <Text style={styles.successTitle}>
-              {eventClosed ? '✓ Evento cerrado' : '✓ Lista completada'}
-            </Text>
+            <Text style={styles.successTitle}>✓ Evento cerrado</Text>
             <Text style={styles.successBody}>
-              {eventClosed
-                ? 'El coordinador cerró este evento. Ya no puedes capturar nuevas entregas, pero puedes consultar tus registros.'
-                : 'Ya entregaste a todos los beneficiarios de tu lista. Si necesitas revisar algún registro, ábrelo desde la lista.'}
+              El coordinador cerró este evento. Ya no puedes capturar nuevas
+              entregas, pero puedes consultar tus registros.
+            </Text>
+          </View>
+        )}
+        {!isDraft && !eventClosed && listFullyDelivered && (
+          <View style={styles.successBanner}>
+            <Text style={styles.successTitle}>✓ Lista completada</Text>
+            <Text style={styles.successBody}>
+              Ya entregaste a todos los beneficiarios de tu lista. Si necesitas
+              revisar algún registro, ábrelo desde la lista.
+            </Text>
+          </View>
+        )}
+        {!isDraft && !eventClosed && programWithChildren && (
+          <View style={styles.softBanner}>
+            <Text style={styles.softBannerText}>
+              Programa origen. La captura del día ocurre en la sesión actual.
+              Solo el coordinador puede cerrar el programa.
+            </Text>
+          </View>
+        )}
+        {!isDraft && !eventClosed && isHistorical && (
+          <View style={styles.softBanner}>
+            <Text style={styles.softBannerText}>
+              Sesión {seriesPos} · cerrada al abrir una nueva. Esta vista es
+              solo de consulta; la captura ocurre en la sesión actual.
             </Text>
           </View>
         )}
@@ -311,36 +400,30 @@ export default function EventDetail() {
             <View style={styles.ctaBlocked}>
               <Text style={styles.ctaBlockedText}>Captura bloqueada (borrador)</Text>
             </View>
-          ) : isCompleted ? (
-            // M1: ya no se captura. CTA primario lleva a revisar registros.
-            <Button
-              label="Ver mis registros"
-              variant="primary"
-              onPress={() => {
-                router.push(`/event/${event.id}/beneficiaries` as never);
-              }}
-            />
-          ) : event.type === 'B' ? (
-            // T1-T3 mobile: en Tipo B no hay lista pre-cargada — el copy
-            // debe ser "Añadir registro" y el flujo va directo al formulario
-            // de captura ad-hoc (no a beneficiaries que es lista vacía).
-            <Button
-              label="Añadir registro"
-              variant="primary"
-              onPress={() => {
-                router.push(`/event/${event.id}/new` as never);
-              }}
-            />
+          ) : canCapture ? (
+            event.type === 'B' ? (
+              <Button
+                label="Añadir registro"
+                variant="primary"
+                onPress={() => router.push(`/event/${event.id}/new` as never)}
+              />
+            ) : (
+              <Button
+                label="Capturar entrega"
+                variant="primary"
+                onPress={() => router.push(`/event/${event.id}/beneficiaries` as never)}
+              />
+            )
           ) : (
+            // No se captura aquí: vista de consulta. Aplica a evento cerrado,
+            // lista completada, programa con sesiones y sesiones históricas.
             <Button
-              label="Capturar entrega"
+              label={event.type === 'B' ? 'Ver registros' : 'Ver mis registros'}
               variant="primary"
-              onPress={() => {
-                router.push(`/event/${event.id}/beneficiaries` as never);
-              }}
+              onPress={() => router.push(`/event/${event.id}/beneficiaries` as never)}
             />
           )}
-          {!isCompleted && (
+          {canCapture && (
             <>
               <View style={{ height: spacing.sm }} />
               <Button
@@ -350,28 +433,23 @@ export default function EventDetail() {
                     : 'Ver lista de beneficiarios'
                 }
                 variant="secondary"
-                onPress={() => {
-                  router.push(`/event/${event.id}/beneficiaries` as never);
-                }}
+                onPress={() => router.push(`/event/${event.id}/beneficiaries` as never)}
               />
             </>
           )}
-          {/* Sprint 9.4 — Excepciones offline. Solo si el evento las permite,
-              no está draft y la lista no está completa. */}
-          {!isDraft && !isCompleted && event.allowExceptions && (
+          {/* Excepciones: solo si capturamos aquí y el evento las permite. */}
+          {canCapture && event.allowExceptions && (
             <View style={{ marginTop: spacing.sm }}>
               <Button
                 label="+ Registrar excepción"
                 variant="secondary"
-                onPress={() => {
-                  router.push(`/event/${event.id}/exception` as never);
-                }}
+                onPress={() => router.push(`/event/${event.id}/exception` as never)}
               />
             </View>
           )}
-          {/* Eventos recurrentes: el operador abre una NUEVA sesión (instancia)
-              cuando la dicta, si el evento lo permite. */}
-          {event.allowOperatorInstances && !isCompleted && (
+          {/* + Nueva sesión: solo desde el programa origen o desde la sesión
+              actual (en curso). Las sesiones cerradas no la muestran. */}
+          {canCreateSession && (
             <View style={{ marginTop: spacing.sm }}>
               <Button
                 label={instanceBusy ? 'Creando sesión…' : '+ Nueva sesión'}
@@ -380,16 +458,21 @@ export default function EventDetail() {
               />
             </View>
           )}
-          {/* Cerrar la sesión (instancia, posición > 1) al terminar la planilla. */}
-          {event.status === 'active' && (event.seriesPosition ?? 0) > 1 && (
-            <View style={{ marginTop: spacing.sm }}>
-              <Button
-                label={instanceBusy ? 'Cerrando…' : 'Cerrar sesión'}
-                variant="secondary"
-                onPress={() => setConfirm('close')}
-              />
-            </View>
-          )}
+          {/* Cerrar sesión: solo si estamos en la sesión actual (instancia
+              pos>1, status active) — el cierre del programa lo hace el
+              coordinador desde la web. */}
+          {!isOrigin &&
+            event.status === 'active' &&
+            lastActiveSession !== null &&
+            event.id === lastActiveSession.id && (
+              <View style={{ marginTop: spacing.sm }}>
+                <Button
+                  label={instanceBusy ? 'Cerrando…' : 'Cerrar sesión'}
+                  variant="secondary"
+                  onPress={() => setConfirm('close')}
+                />
+              </View>
+            )}
           {counts.pendingSync > 0 && (
             <View style={{ marginTop: spacing.sm }}>
               <Button
@@ -730,6 +813,19 @@ const styles = StyleSheet.create({
     borderRadius: radii.full,
   },
   sessionBadgeText: {
+    fontSize: fontSizes.xs,
+    fontWeight: fontWeights.semibold,
+  },
+  contextBadge: {
+    alignSelf: 'flex-start',
+    marginTop: spacing.xs,
+    marginBottom: spacing.sm,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 4,
+    borderRadius: radii.full,
+    borderWidth: 1,
+  },
+  contextBadgeText: {
     fontSize: fontSizes.xs,
     fontWeight: fontWeights.semibold,
   },
