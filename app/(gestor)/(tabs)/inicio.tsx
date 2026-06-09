@@ -49,6 +49,10 @@ import {
 } from '../../../lib/theme/tokens';
 
 type SortMode = 'upcoming' | 'recent';
+type StatusChip = 'all' | 'active' | 'completed' | 'programs';
+
+/** Tarjetas por página en la lista (botón "Ver más" carga la siguiente). */
+const EVENTS_PAGE = 8;
 
 /** Normaliza para búsqueda: minúsculas + sin acentos. */
 function normalizeText(s: string): string {
@@ -56,6 +60,28 @@ function normalizeText(s: string): string {
     .toLowerCase()
     .normalize('NFD')
     .replace(/[̀-ͯ]/g, '');
+}
+
+/** ¿Es un programa? (serie recurrente con sesiones, o habilitado para crearlas). */
+function isProgram(e: EventSummary): boolean {
+  return (e.seriesCount ?? 0) > 1 || !!e.seriesId || e.allowOperatorInstances;
+}
+
+/**
+ * Completado para la TARJETA. El estado real manda; la heurística "lista llena"
+ * SOLO aplica a eventos que NO son serie: en un programa recurrente, que el
+ * primer día asistan todos NO significa que el programa terminó (bug reportado:
+ * "Clases de programación" salía COMPLETADO con una sesión nueva abierta).
+ */
+function isEventCompleted(e: EventSummary): boolean {
+  if (e.status === 'completed' || e.status === 'archived') return true;
+  const isSeries = (e.seriesCount ?? 0) > 1 || !!e.seriesId;
+  return (
+    !isSeries &&
+    e.type === 'A' &&
+    e.totalBeneficiaries > 0 &&
+    e.totalDelivered >= e.totalBeneficiaries
+  );
 }
 
 /** Parsea el JSON cacheado de campos del formulario; vacío si falta o corrupto. */
@@ -79,6 +105,8 @@ export default function InicioTab() {
   const [error, setError] = useState<string | null>(null);
   const [sortMode, setSortMode] = useState<SortMode>('upcoming');
   const [query, setQuery] = useState('');
+  const [statusChip, setStatusChip] = useState<StatusChip>('all');
+  const [shownCount, setShownCount] = useState(EVENTS_PAGE);
   const [view, setView] = useState<'active' | 'archived'>('active');
   const [archivedIds, setArchivedIds] = useState<Set<string>>(new Set());
   const [pinnedIds, setPinnedIds] = useState<Set<string>>(new Set());
@@ -135,8 +163,11 @@ export default function InicioTab() {
           requirePhoto: c.requirePhoto,
           requireGps: c.requireGps,
           captureDomicilio: c.captureDomicilio,
-          // No se cachea (crear/cerrar instancia requiere red); default offline.
-          allowOperatorInstances: false,
+          // Cacheados desde schema v3 → chips de serie y completado correctos offline.
+          allowOperatorInstances: c.allowOperatorInstances,
+          seriesId: c.seriesId,
+          seriesPosition: c.seriesPosition,
+          seriesCount: c.seriesCount,
           totalBeneficiaries: c.totalBeneficiaries,
           totalDelivered: c.totalDelivered,
           customFormFields: parseCachedFormFields(c.customFormFieldsJson),
@@ -181,6 +212,10 @@ export default function InicioTab() {
           captureDomicilio: ev.captureDomicilio,
           totalBeneficiaries: ev.totalBeneficiaries,
           totalDelivered: ev.totalDelivered,
+          allowOperatorInstances: ev.allowOperatorInstances,
+          seriesId: ev.seriesId ?? null,
+          seriesPosition: ev.seriesPosition ?? null,
+          seriesCount: ev.seriesCount ?? 0,
           sectorsJson: null,
           customFormFieldsJson:
             ev.customFormFields.length > 0
@@ -260,8 +295,8 @@ export default function InicioTab() {
   const activeCount = events.length - archivedCount;
   const showArchiveTab = archivedCount > 0 || view === 'archived';
 
-  // Lista visible = vista + búsqueda + (fijados arriba en activos) + orden fecha.
-  // "Próximos" = startDate asc; "Recientes" = endDate desc.
+  // Lista visible = vista + búsqueda + filtro de estado + (fijados arriba en
+  // activos) + orden fecha. "Próximos" = startDate asc; "Recientes" = endDate desc.
   const visibleEvents = useMemo(() => {
     const q = normalizeText(query.trim());
     const byDate = (a: EventSummary, b: EventSummary) =>
@@ -272,6 +307,12 @@ export default function InicioTab() {
       .filter((e) =>
         view === 'archived' ? archivedIds.has(e.id) : !archivedIds.has(e.id),
       )
+      .filter((e) => {
+        if (statusChip === 'active') return !isEventCompleted(e);
+        if (statusChip === 'completed') return isEventCompleted(e);
+        if (statusChip === 'programs') return isProgram(e);
+        return true;
+      })
       .filter(
         (e) =>
           q === '' ||
@@ -286,7 +327,18 @@ export default function InicioTab() {
         }
         return byDate(a, b);
       });
-  }, [events, archivedIds, pinnedIds, view, query, sortMode]);
+  }, [events, archivedIds, pinnedIds, view, query, sortMode, statusChip]);
+
+  // Paginación de la lista: mostramos de a EVENTS_PAGE con botón "Ver más".
+  // Cambiar búsqueda/filtros/vista reinicia a la primera página.
+  useEffect(() => {
+    setShownCount(EVENTS_PAGE);
+  }, [query, statusChip, view, sortMode]);
+  const pagedEvents = useMemo(
+    () => visibleEvents.slice(0, shownCount),
+    [visibleEvents, shownCount],
+  );
+  const remainingEvents = visibleEvents.length - pagedEvents.length;
 
   if (loading) {
     return (
@@ -331,6 +383,33 @@ export default function InicioTab() {
             <Text style={styles.searchClearText}>✕</Text>
           </Pressable>
         )}
+      </View>
+
+      {/* Filtro por estado/tipo: Todos · Activos · Completados · Programas */}
+      <View style={styles.sortRow}>
+        {(
+          [
+            ['all', 'Todos'],
+            ['active', 'Activos'],
+            ['completed', 'Completados'],
+            ['programs', 'Programas'],
+          ] as const
+        ).map(([key, label]) => (
+          <Pressable
+            key={key}
+            onPress={() => setStatusChip(key)}
+            style={[styles.sortChip, statusChip === key && styles.sortChipActive]}
+          >
+            <Text
+              style={[
+                styles.sortChipText,
+                statusChip === key && styles.sortChipTextActive,
+              ]}
+            >
+              {label}
+            </Text>
+          </Pressable>
+        ))}
       </View>
 
       {/* Vista: Activos / Archivados (solo aparece si hay archivados) */}
@@ -398,7 +477,7 @@ export default function InicioTab() {
       )}
 
       <FlatList
-        data={visibleEvents}
+        data={pagedEvents}
         keyExtractor={(e) => e.id}
         contentContainerStyle={styles.listContent}
         keyboardShouldPersistTaps="handled"
@@ -421,13 +500,26 @@ export default function InicioTab() {
                   : `${activeCount} evento${activeCount === 1 ? '' : 's'} activo${activeCount === 1 ? '' : 's'} · mantén presionado para fijar o archivar`}
           </Text>
         }
+        ListFooterComponent={
+          remainingEvents > 0 ? (
+            <Pressable
+              onPress={() => setShownCount((n) => n + EVENTS_PAGE)}
+              style={({ pressed }) => [styles.verMas, pressed && { opacity: 0.7 }]}
+            >
+              <Text style={styles.verMasText}>
+                Ver {Math.min(remainingEvents, EVENTS_PAGE)} más
+                {remainingEvents > EVENTS_PAGE ? ` (de ${remainingEvents})` : ''}
+              </Text>
+            </Pressable>
+          ) : null
+        }
         ListEmptyComponent={
           <View style={styles.emptyCard}>
             <Text style={styles.emptyText}>
               {view === 'archived'
                 ? 'No tienes eventos archivados.'
-                : query.trim() !== ''
-                  ? 'Ningún evento coincide con tu búsqueda.'
+                : query.trim() !== '' || statusChip !== 'all'
+                  ? 'Ningún evento coincide con tu búsqueda o filtros.'
                   : 'Aún no tienes eventos asignados. Cuando el coordinador te asigne a un lugar de entrega aparecerán acá.'}
             </Text>
             {view === 'active' && query.trim() === '' && (
@@ -442,12 +534,11 @@ export default function InicioTab() {
           </View>
         }
         renderItem={({ item }) => {
-          const isCompleted =
-            item.status === 'completed' ||
-            item.status === 'archived' ||
-            (item.type === 'A' &&
-              item.totalBeneficiaries > 0 &&
-              item.totalDelivered >= item.totalBeneficiaries);
+          // Estado real + heurística "lista llena" SOLO para eventos sin serie
+          // (un programa recurrente nunca se marca completado por progreso).
+          const isCompleted = isEventCompleted(item);
+          const sessions = item.seriesCount ?? 0;
+          const programChip = sessions > 1 || item.allowOperatorInstances;
           return (
             <Pressable
               onPress={() => {
@@ -508,6 +599,20 @@ export default function InicioTab() {
                 {item.municipio} ·{' '}
                 {item.type === 'A' ? 'Tipo A · lista' : 'Tipo B · auto-registro'}
               </Text>
+
+              {/* Etiqueta de programa: este evento tiene sesiones (historial)
+                  o permite crearlas — el operador lo identifica de un vistazo. */}
+              {programChip && (
+                <View style={styles.programChipRow}>
+                  <View style={styles.programChip}>
+                    <Text style={styles.programChipText}>
+                      {sessions > 1
+                        ? `⟳ Programa · ${sessions} sesiones`
+                        : '⟳ Programa · permite sesiones'}
+                    </Text>
+                  </View>
+                </View>
+              )}
 
               {/* Fechas (M3) */}
               <Text style={styles.eventDate}>
@@ -901,5 +1006,38 @@ const styles = StyleSheet.create({
     color: colors.cyan,
     fontSize: fontSizes.sm,
     fontWeight: fontWeights.bold,
+  },
+  programChipRow: {
+    flexDirection: 'row',
+    marginTop: spacing.xs,
+  },
+  programChip: {
+    backgroundColor: 'rgba(0,212,255,0.10)',
+    borderWidth: 1,
+    borderColor: 'rgba(0,212,255,0.35)',
+    borderRadius: radii.full,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 2,
+  },
+  programChipText: {
+    color: colors.cyan,
+    fontSize: 10,
+    fontWeight: fontWeights.bold,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  verMas: {
+    alignItems: 'center',
+    paddingVertical: spacing.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radii.md,
+    backgroundColor: colors.bgCard,
+    marginTop: spacing.xs,
+  },
+  verMasText: {
+    color: colors.cyan,
+    fontSize: fontSizes.sm,
+    fontWeight: fontWeights.semibold,
   },
 });

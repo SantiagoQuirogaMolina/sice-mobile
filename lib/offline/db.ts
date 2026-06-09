@@ -22,8 +22,10 @@ const DB_NAME = 'sice-mobile.db';
  * (cached_events / cached_beneficiaries). Súbela cuando cambien sus columnas:
  * en el próximo arranque se recrean con el schema nuevo (los datos son siempre
  * re-descargables). v2 = fix "siempre descargando" en installs actualizados.
+ * v3 = columnas de serie (allow_operator_instances, series_id/position/count)
+ * para que el chip "Programa" y la lógica de completado funcionen offline.
  */
-const CACHE_SCHEMA_VERSION = 2;
+const CACHE_SCHEMA_VERSION = 3;
 
 /**
  * Abre la BD (idempotente). La crea si no existe + ejecuta migraciones.
@@ -86,6 +88,10 @@ function initSchema(db: SQLite.SQLiteDatabase): void {
       capture_domicilio INTEGER NOT NULL DEFAULT 0,
       total_beneficiaries INTEGER NOT NULL DEFAULT 0,
       total_delivered INTEGER NOT NULL DEFAULT 0,
+      allow_operator_instances INTEGER NOT NULL DEFAULT 0,
+      series_id TEXT,
+      series_position INTEGER,
+      series_count INTEGER NOT NULL DEFAULT 0,
       sectors_json TEXT,
       custom_form_fields_json TEXT,
       last_sync_at TEXT
@@ -304,6 +310,12 @@ export interface CachedEvent {
   captureDomicilio: boolean;
   totalBeneficiaries: number;
   totalDelivered: number;
+  /** El operador puede abrir sesiones de este evento (cacheado para offline). */
+  allowOperatorInstances: boolean;
+  /** Serie recurrente (cacheados para chips/lógica offline). */
+  seriesId: string | null;
+  seriesPosition: number | null;
+  seriesCount: number;
   sectorsJson: string | null;
   customFormFieldsJson: string | null;
   lastSyncAt: string | null;
@@ -379,9 +391,10 @@ export function saveCachedEvent(event: CachedEvent): void {
        (id, tenant_id, name, type, status, description, start_date, end_date,
         departamento, municipio, allow_exceptions, allow_qr_self_register,
         require_signature, require_photo, require_gps, capture_domicilio,
-        total_beneficiaries, total_delivered, sectors_json,
+        total_beneficiaries, total_delivered, allow_operator_instances,
+        series_id, series_position, series_count, sectors_json,
         custom_form_fields_json, last_sync_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       event.id,
       event.tenantId,
@@ -401,6 +414,10 @@ export function saveCachedEvent(event: CachedEvent): void {
       event.captureDomicilio ? 1 : 0,
       event.totalBeneficiaries,
       event.totalDelivered,
+      event.allowOperatorInstances ? 1 : 0,
+      event.seriesId,
+      event.seriesPosition,
+      event.seriesCount,
       event.sectorsJson,
       event.customFormFieldsJson,
       event.lastSyncAt,
@@ -434,6 +451,10 @@ export function getCachedEvent(id: string): CachedEvent | null {
     captureDomicilio: bool((row.capture_domicilio as number | null) ?? 0),
     totalBeneficiaries: row.total_beneficiaries as number,
     totalDelivered: row.total_delivered as number,
+    allowOperatorInstances: bool((row.allow_operator_instances as number | null) ?? 0),
+    seriesId: (row.series_id as string | null) ?? null,
+    seriesPosition: (row.series_position as number | null) ?? null,
+    seriesCount: (row.series_count as number | null) ?? 0,
     sectorsJson: (row.sectors_json as string | null) ?? null,
     customFormFieldsJson: (row.custom_form_fields_json as string | null) ?? null,
     lastSyncAt: (row.last_sync_at as string | null) ?? null,
@@ -464,6 +485,10 @@ export function listCachedEvents(): CachedEvent[] {
     captureDomicilio: bool((row.capture_domicilio as number | null) ?? 0),
     totalBeneficiaries: row.total_beneficiaries as number,
     totalDelivered: row.total_delivered as number,
+    allowOperatorInstances: bool((row.allow_operator_instances as number | null) ?? 0),
+    seriesId: (row.series_id as string | null) ?? null,
+    seriesPosition: (row.series_position as number | null) ?? null,
+    seriesCount: (row.series_count as number | null) ?? 0,
     sectorsJson: (row.sectors_json as string | null) ?? null,
     customFormFieldsJson: (row.custom_form_fields_json as string | null) ?? null,
     lastSyncAt: (row.last_sync_at as string | null) ?? null,

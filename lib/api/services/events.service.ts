@@ -82,6 +82,8 @@ export interface EventSummary {
   /** Serie recurrente: agrupa instancias. seriesPosition>1 ⇒ es una sesión/instancia. */
   seriesId?: string | null;
   seriesPosition?: number | null;
+  /** Nº de sesiones en la serie (lo manda la lista del backend). 0 si no es serie. */
+  seriesCount?: number;
   totalBeneficiaries: number;
   totalDelivered: number;
   /** Campos del formulario dinámico (Tipo B). Vacío en Tipo A o sin form. */
@@ -122,6 +124,7 @@ interface BackendEvent {
   allowOperatorInstances?: boolean;
   seriesId?: string | null;
   seriesPosition?: number | null;
+  seriesCount?: number;
   totalBeneficiaries: number;
   totalDelivered: number;
   customForm?: { fields: BackendFormField[] } | null;
@@ -174,6 +177,8 @@ function mapEvent(b: BackendEvent): EventSummary {
     allowOperatorInstances: b.allowOperatorInstances ?? false,
     seriesId: b.seriesId ?? null,
     seriesPosition: b.seriesPosition ?? null,
+    // Solo la LISTA del backend lo adjunta (getById no) — 0 = desconocido/no serie.
+    seriesCount: b.seriesCount ?? 0,
     totalBeneficiaries: b.totalBeneficiaries,
     totalDelivered: b.totalDelivered,
     customFormFields: mapFormFields(b.customForm),
@@ -300,6 +305,17 @@ export const eventsService = {
 };
 
 function toCached(s: EventSummary, sectorsJson: string | null): CachedEvent {
+  // seriesCount solo viaja en la LISTA del backend; getById lo trae como 0.
+  // Para no pisar el valor bueno del caché al abrir el detalle, conservamos el
+  // conteo previo cuando el nuevo es 0 pero el evento sigue siendo serie.
+  let seriesCount = s.seriesCount ?? 0;
+  if (seriesCount === 0 && s.seriesId) {
+    try {
+      seriesCount = getCachedEvent(s.id)?.seriesCount ?? 0;
+    } catch {
+      /* caché no disponible → 0 */
+    }
+  }
   return {
     id: s.id,
     tenantId: s.tenantId,
@@ -319,6 +335,10 @@ function toCached(s: EventSummary, sectorsJson: string | null): CachedEvent {
     captureDomicilio: s.captureDomicilio,
     totalBeneficiaries: s.totalBeneficiaries,
     totalDelivered: s.totalDelivered,
+    allowOperatorInstances: s.allowOperatorInstances,
+    seriesId: s.seriesId ?? null,
+    seriesPosition: s.seriesPosition ?? null,
+    seriesCount,
     sectorsJson,
     customFormFieldsJson:
       s.customFormFields.length > 0 ? JSON.stringify(s.customFormFields) : null,
@@ -344,10 +364,11 @@ function fromCached(c: CachedEvent): EventSummary {
     requirePhoto: c.requirePhoto,
     requireGps: c.requireGps,
     captureDomicilio: c.captureDomicilio,
-    // No se cachean (crear/cerrar instancia requiere red); default seguro offline.
-    allowOperatorInstances: false,
-    seriesId: null,
-    seriesPosition: null,
+    // Cacheados desde v3 del schema (chips/lógica de serie también offline).
+    allowOperatorInstances: c.allowOperatorInstances,
+    seriesId: c.seriesId,
+    seriesPosition: c.seriesPosition,
+    seriesCount: c.seriesCount,
     totalBeneficiaries: c.totalBeneficiaries,
     totalDelivered: c.totalDelivered,
     customFormFields: parseCustomFormFields(c.customFormFieldsJson),
