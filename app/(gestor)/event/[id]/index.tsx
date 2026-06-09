@@ -485,66 +485,86 @@ export default function EventDetail() {
           )}
         </View>
 
-        {/* Historial de sesiones: ordenado de MÁS RECIENTE a más antigua, paginado
-            (las recientes primero — útiles; las antiguas a "Ver más"). Evita listas
-            enormes en programas con 100+ sesiones. */}
+        {/* Historial de sesiones: el PROGRAMA ORIGEN queda ANCLADO ARRIBA
+            (es el único lugar para crear sesiones nuevas — atajo fácil).
+            Debajo, las instancias ordenadas más reciente → más antigua,
+            paginadas de 5 en 5 para no llenar la pantalla con cientos. */}
         {sessions.length > 1 &&
           (() => {
-            const sorted = [...sessions].sort(
-              (a, b) => (b.seriesPosition ?? 0) - (a.seriesPosition ?? 0),
-            );
-            const visible = sorted.slice(0, sessionsShown);
-            const remaining = sorted.length - visible.length;
+            const origin = sessions.find((s) => (s.seriesPosition ?? 0) === 1);
+            const instances = sessions
+              .filter((s) => (s.seriesPosition ?? 0) > 1)
+              .sort((a, b) => (b.seriesPosition ?? 0) - (a.seriesPosition ?? 0));
+            const visible = instances.slice(0, sessionsShown);
+            const remaining = instances.length - visible.length;
+            const renderRow = (s: EventSummary, isOriginRow: boolean) => {
+              const isCurrent = s.id === id;
+              const open = s.status === 'active' || s.status === 'paused';
+              return (
+                <Pressable
+                  key={s.id}
+                  disabled={isCurrent}
+                  onPress={() => router.push(`/event/${s.id}` as never)}
+                  style={({ pressed }) => [
+                    styles.sessionRow,
+                    isOriginRow && styles.sessionRowOrigin,
+                    pressed && !isCurrent && { opacity: 0.7 },
+                  ]}
+                >
+                  <View style={{ flex: 1, minWidth: 0 }}>
+                    <Text style={styles.sessionName} numberOfLines={1}>
+                      {isOriginRow
+                        ? `Programa origen${isCurrent ? ' · estás aquí' : ''}`
+                        : `Sesión ${s.seriesPosition ?? 1}${isCurrent ? ' · esta' : ''}`}
+                    </Text>
+                    <Text style={styles.sessionMeta} numberOfLines={1}>
+                      {isOriginRow
+                        ? 'Ir aquí para abrir una nueva sesión'
+                        : `${s.startDate.slice(0, 10)} · ${s.totalDelivered}/${s.totalBeneficiaries} asistieron`}
+                    </Text>
+                  </View>
+                  <View
+                    style={[
+                      styles.sessionBadge,
+                      isOriginRow
+                        ? { backgroundColor: 'var(--cyan-soft)' /* fallback override below */ }
+                        : {
+                            backgroundColor: open
+                              ? colors.successBg
+                              : 'rgba(255,255,255,0.06)',
+                          },
+                      isOriginRow && {
+                        backgroundColor: 'rgba(0,212,255,0.12)',
+                      },
+                    ]}
+                  >
+                    <Text
+                      style={[
+                        styles.sessionBadgeText,
+                        {
+                          color: isOriginRow
+                            ? colors.cyan
+                            : open
+                              ? colors.success
+                              : colors.textMuted,
+                        },
+                      ]}
+                    >
+                      {isOriginRow ? 'Origen' : open ? 'Abierta' : 'Cerrada'}
+                    </Text>
+                  </View>
+                </Pressable>
+              );
+            };
             return (
               <View style={styles.infoCard}>
                 <Text style={styles.infoTitle}>
                   Sesiones del programa ({sessions.length})
                 </Text>
-                {visible.map((s) => {
-                  const isCurrent = s.id === id;
-                  const open = s.status === 'active' || s.status === 'paused';
-                  return (
-                    <Pressable
-                      key={s.id}
-                      disabled={isCurrent}
-                      onPress={() => router.push(`/event/${s.id}` as never)}
-                      style={({ pressed }) => [
-                        styles.sessionRow,
-                        pressed && !isCurrent && { opacity: 0.7 },
-                      ]}
-                    >
-                      <View style={{ flex: 1, minWidth: 0 }}>
-                        <Text style={styles.sessionName} numberOfLines={1}>
-                          Sesión {s.seriesPosition ?? 1}
-                          {isCurrent ? ' · esta' : ''}
-                        </Text>
-                        <Text style={styles.sessionMeta} numberOfLines={1}>
-                          {s.startDate.slice(0, 10)} · {s.totalDelivered}/
-                          {s.totalBeneficiaries} asistieron
-                        </Text>
-                      </View>
-                      <View
-                        style={[
-                          styles.sessionBadge,
-                          {
-                            backgroundColor: open
-                              ? colors.successBg
-                              : 'rgba(255,255,255,0.06)',
-                          },
-                        ]}
-                      >
-                        <Text
-                          style={[
-                            styles.sessionBadgeText,
-                            { color: open ? colors.success : colors.textMuted },
-                          ]}
-                        >
-                          {open ? 'Abierta' : 'Cerrada'}
-                        </Text>
-                      </View>
-                    </Pressable>
-                  );
-                })}
+                {/* Programa origen anclado arriba — el único punto desde el
+                    que se puede abrir una sesión nueva. */}
+                {origin && renderRow(origin, true)}
+                {visible.map((s) => renderRow(s, false))}
                 {remaining > 0 && (
                   <Pressable
                     onPress={() => setSessionsShown((n) => n + SESSIONS_PAGE)}
@@ -825,6 +845,17 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.sm,
     borderTopWidth: 1,
     borderTopColor: colors.border,
+  },
+  sessionRowOrigin: {
+    backgroundColor: 'rgba(0,212,255,0.05)',
+    borderLeftWidth: 3,
+    borderLeftColor: colors.cyan,
+    paddingLeft: spacing.sm,
+    marginHorizontal: -spacing.sm,
+    marginTop: spacing.xs,
+    marginBottom: spacing.xs,
+    borderRadius: radii.sm,
+    borderTopWidth: 0,
   },
   sessionName: {
     color: colors.textPrimary,
