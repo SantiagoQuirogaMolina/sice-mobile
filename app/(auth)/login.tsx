@@ -64,7 +64,7 @@ export default function LoginScreen() {
             <SiceMark size={56} color={colors.cyan} clipFill={colors.navyDark} />
           </View>
           <Text style={styles.brandWord}>SICE</Text>
-          <Text style={styles.brandTag}>SISTEMA INTEGRAL DE CONTROL Y EVIDENCIA</Text>
+          <Text style={styles.brandTag}>SISTEMA INTEGRADO DE COBERTURA Y EFICIENCIA</Text>
           <Text style={styles.brandTitle}>Operador de campo</Text>
           <Text style={styles.brandSubtitle}>
             Captura entregas con firma, foto y GPS · funciona offline
