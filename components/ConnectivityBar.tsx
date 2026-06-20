@@ -17,6 +17,7 @@ import { useEffect, useRef, useState } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { colors, fontSizes, fontWeights, spacing } from '../lib/theme/tokens';
+import { hasAnyPending, processSyncQueue } from '../lib/sync/queue';
 
 export function ConnectivityBar() {
   const insets = useSafeAreaInsets();
@@ -36,6 +37,10 @@ export function ConnectivityBar() {
         setShowReconnected(true);
         if (timer.current) clearTimeout(timer.current);
         timer.current = setTimeout(() => setShowReconnected(false), 2500);
+        // Auto-sync al recuperar internet: sube lo pendiente sin que el operador
+        // tenga que entrar a Sincronización. El mutex interno evita solapamientos
+        // (drena toda la cola). Best-effort: si falla, la pantalla manual queda igual.
+        if (hasAnyPending()) void processSyncQueue();
       }
       wasOffline.current = !isOnline;
     });

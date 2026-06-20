@@ -12,6 +12,8 @@
 
 import { useEffect, useState } from 'react';
 import {
+  Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   View,
@@ -22,6 +24,9 @@ import {
   countDeliveriesByStatus,
   countPendingCitizensByStatus,
   countPendingEbsByStatus,
+  listProblemDeliveries,
+  unblockDelivery,
+  type DeliveryProblemRow,
 } from '../../../lib/offline/db';
 import {
   processSyncQueue,
@@ -65,11 +70,18 @@ function computeTotals(): Totals {
 
 export default function SyncTab() {
   const [totals, setTotals] = useState<Totals>(computeTotals);
+  const [problems, setProblems] = useState<DeliveryProblemRow[]>(() =>
+    listProblemDeliveries(100),
+  );
   const [syncing, setSyncing] = useState(false);
   const [progress, setProgress] = useState({ done: 0, total: 0 });
+  const [elapsed, setElapsed] = useState(0);
   const [lastResult, setLastResult] = useState<string | null>(null);
 
-  const refresh = () => setTotals(computeTotals());
+  const refresh = () => {
+    setTotals(computeTotals());
+    setProblems(listProblemDeliveries(100));
+  };
 
   useEffect(() => {
     refresh();
@@ -91,8 +103,24 @@ export default function SyncTab() {
     return unsub;
   }, []);
 
+  // Cronómetro en vivo mientras sincroniza → permite estimar el tiempo restante.
+  useEffect(() => {
+    if (!syncing) return;
+    const start = Date.now();
+    setElapsed(0);
+    const t = setInterval(() => setElapsed(Math.floor((Date.now() - start) / 1000)), 1000);
+    return () => clearInterval(t);
+  }, [syncing]);
+
   const startSync = async () => {
     setLastResult(null);
+    await processSyncQueue();
+  };
+
+  // Reintento por captura: la desbloquea y dispara el drain (el mutex evita solapes).
+  const retryOne = async (id: string) => {
+    unblockDelivery(id);
+    refresh();
     await processSyncQueue();
   };
 
@@ -115,6 +143,13 @@ export default function SyncTab() {
     : totalBlocked > 0
       ? `⚠ ${totalBlocked} bloqueada${totalBlocked === 1 ? '' : 's'}`
       : `⏳ ${totalPending} por enviar`;
+
+  // Restante + estimado de tiempo (en vivo) mientras sincroniza.
+  const remaining = Math.max(0, progress.total - progress.done);
+  const rate = elapsed > 0 ? progress.done / elapsed : 0;
+  const etaSec = rate > 0 && remaining > 0 ? Math.ceil(remaining / rate) : null;
+  const etaLabel =
+    etaSec == null ? '' : etaSec < 60 ? `~${etaSec}s` : `~${Math.ceil(etaSec / 60)} min`;
 
   return (
     <Screen padding="none">
@@ -183,7 +218,8 @@ export default function SyncTab() {
               />
             </View>
             <Text style={styles.progressText}>
-              {progress.done} / {progress.total} capturas
+              {progress.done} / {progress.total} · faltan {remaining}
+              {etaLabel ? ` · ${etaLabel} restante` : ''}
             </Text>
           </View>
         )}
@@ -200,9 +236,45 @@ export default function SyncTab() {
         )}
       </View>
 
+      {/* Detalle por captura con problema + reintento individual ─────────── */}
+      {problems.length > 0 && !syncing && (
+        <View style={styles.problemsCard}>
+          <Text style={styles.problemsTitle}>
+            Capturas con problema ({problems.length}
+            {problems.length >= 100 ? '+' : ''})
+          </Text>
+          <ScrollView style={styles.problemsScroll} nestedScrollEnabled>
+            {problems.map((p) => {
+              const cfg = problemConfig(p.syncStatus);
+              return (
+                <View key={p.id} style={styles.problemRow}>
+                  <View style={[styles.problemDot, { backgroundColor: cfg.bg }]}>
+                    <Text style={[styles.problemGlyph, { color: cfg.color }]}>{cfg.glyph}</Text>
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.problemFolio}>
+                      SICE-{p.id.slice(0, 8).toUpperCase()}
+                    </Text>
+                    <Text style={styles.problemError} numberOfLines={2}>
+                      {p.lastError ?? cfg.label}
+                    </Text>
+                  </View>
+                  <Pressable
+                    onPress={() => void retryOne(p.id)}
+                    style={({ pressed }) => [styles.retryBtn, pressed && { opacity: 0.7 }]}
+                  >
+                    <Text style={styles.retryText}>Reintentar</Text>
+                  </Pressable>
+                </View>
+              );
+            })}
+          </ScrollView>
+        </View>
+      )}
+
       <Text style={styles.foot}>
-        Para reintentar capturas bloqueadas individualmente, entrá al evento
-        correspondiente desde Inicio → Sincronizar.
+        Toca «Reintentar» en una captura con problema, o «Reintentar bloqueadas»
+        para todas. Para ver el detalle completo de un evento, entrá desde Inicio.
       </Text>
     </Screen>
   );
@@ -231,6 +303,19 @@ function KpiBox({
       <Text style={styles.kpiLabel}>{label}</Text>
     </View>
   );
+}
+
+function problemConfig(status: DeliveryProblemRow['syncStatus']): {
+  glyph: string;
+  color: string;
+  bg: string;
+  label: string;
+} {
+  if (status === 'blocked')
+    return { glyph: '⚠', color: colors.warning, bg: colors.warningBg, label: 'Bloqueada' };
+  if (status === 'conflict')
+    return { glyph: '!', color: colors.conflict, bg: colors.warningBg, label: 'Conflicto' };
+  return { glyph: '⟲', color: colors.error, bg: colors.errorBg, label: 'Error · reintentando' };
 }
 
 const styles = StyleSheet.create({
@@ -357,5 +442,71 @@ const styles = StyleSheet.create({
     marginTop: spacing.lg,
     textAlign: 'center',
     lineHeight: 18,
+  },
+  problemsCard: {
+    marginHorizontal: spacing.lg,
+    marginTop: spacing.lg,
+    backgroundColor: colors.bgCard,
+    borderRadius: radii.md,
+    borderWidth: 1,
+    borderColor: colors.warning,
+    paddingVertical: spacing.sm,
+  },
+  problemsTitle: {
+    color: colors.warning,
+    fontSize: 10,
+    fontWeight: fontWeights.bold,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+    paddingHorizontal: spacing.md,
+    marginBottom: spacing.xs,
+  },
+  problemsScroll: {
+    maxHeight: 260,
+  },
+  problemRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+  },
+  problemDot: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  problemGlyph: {
+    fontSize: 15,
+    fontWeight: fontWeights.bold,
+  },
+  problemFolio: {
+    color: colors.textPrimary,
+    fontSize: fontSizes.sm,
+    fontWeight: fontWeights.semibold,
+    fontVariant: ['tabular-nums'],
+  },
+  problemError: {
+    color: colors.textMuted,
+    fontSize: fontSizes.xs,
+    marginTop: 1,
+    lineHeight: 15,
+  },
+  retryBtn: {
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.xs,
+    borderRadius: radii.sm,
+    backgroundColor: colors.warningBg,
+  },
+  retryText: {
+    color: colors.warning,
+    fontSize: 10,
+    fontWeight: fontWeights.bold,
+    letterSpacing: 0.5,
+    textTransform: 'uppercase',
   },
 });

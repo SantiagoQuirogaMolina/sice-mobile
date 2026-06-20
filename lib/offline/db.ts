@@ -895,6 +895,41 @@ export function countDeliveriesByStatus(status: SyncStatus): number {
   return row?.c ?? 0;
 }
 
+/** Fila LIGERA (sin base64) para listar capturas con problema en la UI de sync. */
+export interface DeliveryProblemRow {
+  id: string;
+  eventId: string;
+  syncStatus: SyncStatus;
+  lastError: string | null;
+  capturedAt: string;
+}
+
+/**
+ * Capturas que requieren atención (blocked/conflict/error), SIN cargar las fotos
+ * base64 — solo columnas livianas para mostrarlas + reintentar. Ordena blocked y
+ * conflict primero (acción del coordinador), luego error (reintentable). Cap por
+ * defecto 100: en la UI mostramos las primeras y "N más" si sobran.
+ */
+export function listProblemDeliveries(limit = 100): DeliveryProblemRow[] {
+  const db = getDB();
+  const rows = db.getAllSync<Record<string, unknown>>(
+    `SELECT id, event_id, sync_status, last_error, captured_at
+       FROM pending_deliveries
+      WHERE sync_status IN ('blocked', 'conflict', 'error')
+      ORDER BY CASE sync_status WHEN 'blocked' THEN 0 WHEN 'conflict' THEN 1 ELSE 2 END,
+               captured_at ASC
+      LIMIT ?`,
+    [limit],
+  );
+  return rows.map((r) => ({
+    id: r.id as string,
+    eventId: r.event_id as string,
+    syncStatus: r.sync_status as SyncStatus,
+    lastError: (r.last_error as string | null) ?? null,
+    capturedAt: r.captured_at as string,
+  }));
+}
+
 export function getPendingDelivery(id: string): PendingDelivery | null {
   const db = getDB();
   const row = db.getFirstSync<Record<string, unknown>>(
