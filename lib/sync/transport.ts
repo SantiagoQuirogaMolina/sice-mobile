@@ -49,10 +49,14 @@ async function uploadEvidence(
   sha256: string,
 ): Promise<{ url: string; sha256: string }> {
   // Idempotente: si el backend ya tiene este sha256, devuelve la URL existente.
+  // Timeout PROPORCIONAL al tamaño: en redes lentas un timeout fijo de 60s tumbaba
+  // las fotos grandes una y otra vez (error→backoff→error sin avanzar). ~60ms/KB
+  // sobre una base de 60s escala el límite con el payload y rompe ese bucle.
+  const timeoutMs = Math.max(60_000, Math.ceil(dataUrl.length / 1024) * 60);
   const res = await api.post<UploadEvidenceResponse>(
     '/api/v1/evidence/upload',
     { kind, sha256, dataUrl },
-    { timeoutMs: 60000 }, // foto puede pesar ~300KB, dale tiempo
+    { timeoutMs },
   );
   return { url: res.url, sha256: res.sha256 };
 }
@@ -122,7 +126,17 @@ function classify(err: unknown): SyncResult {
       };
     }
     // 4xx (no 401/408/429) — error permanente, no reintentar.
-    if (err.status >= 400 && err.status < 500 && err.status !== 408 && err.status !== 429) {
+    // 401 SÍ es reintentable: el cliente intenta refresh on-401 + reintenta; si un
+    // worker concurrente recibe 401 ANTES de que el líder termine el refresh, o el
+    // refresh tarda, NO queremos bloquear la captura para siempre — vuelve a 'error'
+    // con backoff y reintenta sola en el próximo pase con el token ya renovado.
+    if (
+      err.status >= 400 &&
+      err.status < 500 &&
+      err.status !== 401 &&
+      err.status !== 408 &&
+      err.status !== 429
+    ) {
       return {
         kind: 'error',
         message: apiErrorMessage(err),

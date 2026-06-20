@@ -229,9 +229,13 @@ export default function InicioTab() {
       // tengan capturas locales sin subir.
       pruneCachedEvents(items.map((e) => e.id));
     } catch (e) {
-      const isNetwork = e instanceof ApiError && e.code === 'NETWORK_ERROR';
+      // NETWORK_ERROR ya viene tras 3 micro-reintentos del client → si llega
+      // aquí, de verdad no hay servidor (no un glitch). TIMEOUT (cold-start de
+      // Railway) también es "no se pudo llegar, muestro lo descargado", no un error.
+      const offlineish =
+        e instanceof ApiError && (e.code === 'NETWORK_ERROR' || e.code === 'TIMEOUT');
       setError(
-        isNetwork
+        offlineish
           ? 'Modo offline · Mostrando eventos descargados'
           : apiErrorMessage(e, 'No se pudieron cargar tus eventos. Reintenta.'),
       );

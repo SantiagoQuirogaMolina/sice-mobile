@@ -72,6 +72,11 @@ interface RequestOptions {
    * la request a /auth/refresh no se reintente recursivamente.
    */
   skipRefreshOn401?: boolean;
+  /**
+   * Si true, NO reintenta a nivel de fetch ante fallo de red/timeout (1 intento).
+   * Lo usa el health-check de conectividad para detectar rápido "backend caído".
+   */
+  noQuickRetry?: boolean;
 }
 
 async function getAccessToken(): Promise<string | null> {
@@ -159,41 +164,48 @@ async function request<T>(
   // hasta 25s en la primera request del día. Si ya están todos los pods
   // calientes, una request normal toma <500ms.
   const timeoutMs = opts.timeoutMs ?? 30000;
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  const method = opts.method ?? 'GET';
+  const bodyStr = opts.body !== undefined ? JSON.stringify(opts.body) : undefined;
 
-  // Log visible en Metro logs para diagnóstico
-  const startedAt = Date.now();
-  // eslint-disable-next-line no-console
-  console.log(`[api] ${opts.method ?? 'GET'} ${url}`);
-
-  let res: Response;
-  try {
-    res = await fetch(url, {
-      method: opts.method ?? 'GET',
-      headers,
-      body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
-      signal: controller.signal,
-    });
-  } catch (e) {
-    clearTimeout(timeout);
-    const elapsed = Date.now() - startedAt;
-    const isAbort = e instanceof Error && e.name === 'AbortError';
-    const message = isAbort
-      ? `Timeout tras ${Math.round(elapsed / 1000)}s. Verifica internet o reintenta (Railway puede estar arrancando).`
-      : e instanceof Error
-        ? e.message
-        : 'Network error';
-    // Log a console.log (no .error) para no spamear el overlay rojo de Expo Go
-    // cuando el operador está offline — es el caso esperado, no un bug.
-    // Los logs siguen visibles en la terminal de Metro para diagnóstico.
+  // Reintento CORTO solo ante fallo de RED/TIMEOUT (nunca ante una respuesta HTTP:
+  // un 4xx/5xx lo decide la cola). En 3G/rural un drop puntual mandaba el item al
+  // backoff largo (30s→30min); 2 micro-reintentos (300ms, 800ms) absorben el glitch.
+  const maxAttempts = opts.noQuickRetry ? 1 : 3;
+  let res: Response | undefined;
+  let lastErr: ApiError | undefined;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    const startedAt = Date.now();
     // eslint-disable-next-line no-console
-    console.log(`[api] FAIL ${url} (${elapsed}ms):`, message);
-    throw new ApiError(isAbort ? 'TIMEOUT' : 'NETWORK_ERROR', message, 0);
+    console.log(`[api] ${method} ${url}${attempt > 1 ? ` (reintento ${attempt})` : ''}`);
+    try {
+      res = await fetch(url, { method, headers, body: bodyStr, signal: controller.signal });
+      clearTimeout(timeout);
+      // eslint-disable-next-line no-console
+      console.log(`[api] ${res.status} ${url} (${Date.now() - startedAt}ms)`);
+      break; // hubo respuesta (cualquier status) → no se reintenta a este nivel
+    } catch (e) {
+      clearTimeout(timeout);
+      const elapsed = Date.now() - startedAt;
+      const isAbort = e instanceof Error && e.name === 'AbortError';
+      const message = isAbort
+        ? `Timeout tras ${Math.round(elapsed / 1000)}s. Verifica internet o reintenta (Railway puede estar arrancando).`
+        : e instanceof Error
+          ? e.message
+          : 'Network error';
+      // console.log (no .error) para no spamear el overlay rojo cuando hay offline.
+      // eslint-disable-next-line no-console
+      console.log(`[api] FAIL ${url} (${elapsed}ms):`, message);
+      lastErr = new ApiError(isAbort ? 'TIMEOUT' : 'NETWORK_ERROR', message, 0);
+      if (attempt < maxAttempts) {
+        await new Promise((r) => setTimeout(r, attempt === 1 ? 300 : 800));
+        continue;
+      }
+      throw lastErr;
+    }
   }
-  clearTimeout(timeout);
-  // eslint-disable-next-line no-console
-  console.log(`[api] ${res.status} ${url} (${Date.now() - startedAt}ms)`);
+  if (!res) throw lastErr ?? new ApiError('NETWORK_ERROR', 'Network error', 0);
 
   // Sprint 9.6: 401 → intentar refresh + reintentar UNA vez.
   // - skipAuth → no hay nada que refrescar
