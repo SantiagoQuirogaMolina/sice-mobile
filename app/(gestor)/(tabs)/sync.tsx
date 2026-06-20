@@ -10,7 +10,8 @@
  * evento y usá /event/[id]/sync (la pantalla preexistente).
  */
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
+import { useFocusEffect } from 'expo-router';
 import {
   Pressable,
   ScrollView,
@@ -111,6 +112,16 @@ export default function SyncTab() {
     const t = setInterval(() => setElapsed(Math.floor((Date.now() - start) / 1000)), 1000);
     return () => clearInterval(t);
   }, [syncing]);
+
+  // Re-hidrata contadores + lista al GANAR FOCO (al volver a la pestaña). Sin esto,
+  // los tabs no se re-montan y los totales quedaban STALE: capturas hechas en otra
+  // pantalla o un sync ya completado no se reflejaban → la pestaña "no funcionaba".
+  useFocusEffect(
+    useCallback(() => {
+      setTotals(computeTotals());
+      setProblems(listProblemDeliveries(100));
+    }, []),
+  );
 
   const startSync = async () => {
     setLastResult(null);

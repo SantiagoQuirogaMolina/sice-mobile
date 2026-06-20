@@ -100,6 +100,11 @@ function isReady(at: string | null): boolean {
 /* ─────────────────────────── Mutex ─────────────────────────── */
 
 let inFlight = false;
+// Si llega un disparo (auto-sync al reconectar, AppState, botón) mientras YA hay
+// un drain corriendo, no se descarta: se marca para re-lanzar al terminar. Antes
+// el mutex tragaba el disparo → al reconectar no se sincronizaba si justo había
+// uno en curso.
+let pendingRetry = false;
 
 /* ─────────────────────────── Public API ─────────────────────────── */
 
@@ -159,6 +164,7 @@ interface BatchTotals {
  */
 export async function processSyncQueue(): Promise<BatchTotals> {
   if (inFlight) {
+    pendingRetry = true; // se re-lanza al terminar el drain en curso
     return { processed: 0, ok: 0, failed: 0, blocked: 0 };
   }
   inFlight = true;
@@ -254,6 +260,12 @@ export async function processSyncQueue(): Promise<BatchTotals> {
       blocked: totals.blocked,
     });
     inFlight = false;
+    // Si hubo un disparo mientras corríamos, re-lanzamos UNA vez (no recursión
+    // infinita: solo si llegó un trigger real durante el drain anterior).
+    if (pendingRetry) {
+      pendingRetry = false;
+      void processSyncQueue();
+    }
   }
 }
 
