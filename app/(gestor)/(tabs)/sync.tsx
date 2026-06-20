@@ -19,9 +19,9 @@ import {
 import { Screen } from '../../../components/Screen';
 import { Button } from '../../../components/Button';
 import {
-  listDeliveriesByStatus,
-  listPendingCitizensByStatus,
-  listPendingEbsByStatus,
+  countDeliveriesByStatus,
+  countPendingCitizensByStatus,
+  countPendingEbsByStatus,
 } from '../../../lib/offline/db';
 import {
   processSyncQueue,
@@ -46,24 +46,20 @@ interface Totals {
 }
 
 function computeTotals(): Totals {
-  const dPending = listDeliveriesByStatus('pending').length;
-  const dError = listDeliveriesByStatus('error').length;
-  const dBlocked = listDeliveriesByStatus('blocked').length;
-  const dConflict = listDeliveriesByStatus('conflict').length;
-  const dSynced = listDeliveriesByStatus('synced').length;
-
+  // COUNT ligero (sin materializar base64 de foto/firma) — antes contar con
+  // list().length cargaba TODAS las filas a memoria, inviable con miles.
   return {
-    deliveriesPending: dPending + dError,
-    deliveriesBlocked: dBlocked + dConflict,
-    deliveriesSynced: dSynced,
+    deliveriesPending:
+      countDeliveriesByStatus('pending') + countDeliveriesByStatus('error'),
+    deliveriesBlocked:
+      countDeliveriesByStatus('blocked') + countDeliveriesByStatus('conflict'),
+    deliveriesSynced: countDeliveriesByStatus('synced'),
     citizensPending:
-      listPendingCitizensByStatus('pending').length +
-      listPendingCitizensByStatus('error').length,
-    citizensBlocked: listPendingCitizensByStatus('blocked').length,
+      countPendingCitizensByStatus('pending') + countPendingCitizensByStatus('error'),
+    citizensBlocked: countPendingCitizensByStatus('blocked'),
     ebsPending:
-      listPendingEbsByStatus('pending').length +
-      listPendingEbsByStatus('error').length,
-    ebsBlocked: listPendingEbsByStatus('blocked').length,
+      countPendingEbsByStatus('pending') + countPendingEbsByStatus('error'),
+    ebsBlocked: countPendingEbsByStatus('blocked'),
   };
 }
 
@@ -160,13 +156,36 @@ export default function SyncTab() {
 
       {/* Acciones */}
       <View style={styles.actions}>
-        {totalPending > 0 && (
+        {(totalPending > 0 || totalBlocked > 0) && (
           <Button
-            label={syncing ? `Sincronizando ${progress.done}/${progress.total}…` : '⬆ Sincronizar todo ahora'}
+            label={
+              syncing
+                ? `Sincronizando ${progress.done}/${progress.total}…`
+                : totalPending > 0
+                  ? '⬆ Sincronizar todo ahora'
+                  : `↻ Reintentar ${totalBlocked} bloqueada${totalBlocked === 1 ? '' : 's'}`
+            }
             onPress={() => void startSync()}
             disabled={syncing}
             loading={syncing}
           />
+        )}
+        {syncing && progress.total > 0 && (
+          <View style={styles.progressWrap}>
+            <View style={styles.progressBg}>
+              <View
+                style={[
+                  styles.progressFill,
+                  {
+                    width: `${Math.min(100, Math.round((progress.done / progress.total) * 100))}%` as `${number}%`,
+                  },
+                ]}
+              />
+            </View>
+            <Text style={styles.progressText}>
+              {progress.done} / {progress.total} capturas
+            </Text>
+          </View>
         )}
         {allClean && (
           <View style={styles.cleanCard}>
@@ -290,6 +309,27 @@ const styles = StyleSheet.create({
   actions: {
     paddingHorizontal: spacing.lg,
     paddingTop: spacing.lg,
+  },
+  progressWrap: {
+    marginTop: spacing.md,
+    gap: spacing.xs,
+  },
+  progressBg: {
+    height: 8,
+    backgroundColor: colors.bgInput,
+    borderRadius: radii.full,
+    overflow: 'hidden',
+  },
+  progressFill: {
+    height: '100%',
+    backgroundColor: colors.cyan,
+    borderRadius: radii.full,
+  },
+  progressText: {
+    color: colors.textMuted,
+    fontSize: fontSizes.xs,
+    textAlign: 'center',
+    fontVariant: ['tabular-nums'],
   },
   cleanCard: {
     backgroundColor: colors.bgCard,

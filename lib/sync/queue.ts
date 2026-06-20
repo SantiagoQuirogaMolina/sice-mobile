@@ -22,6 +22,9 @@
  */
 
 import {
+  countDeliveriesByStatus,
+  countPendingCitizensByStatus,
+  countPendingEbsByStatus,
   countPendingSync,
   getPendingCitizen,
   getPendingEbByCitizen,
@@ -100,8 +103,44 @@ let inFlight = false;
 
 /* ─────────────────────────── Public API ─────────────────────────── */
 
-const BATCH_SIZE = 10;
+// Tamaño del lote por etapa y por PASE. Con el drain (varios pases por llamada)
+// + la concurrencia de abajo, UNA sola pulsación de "Sincronizar" vacía TODA la
+// cola (antes solo subía 10 por pulsación, uno por uno → inviable para miles).
+const BATCH_SIZE = 25;
+// Concurrencia: subir varias a la vez. Deliveries cargan evidencia (foto ~300KB)
+// → concurrencia moderada para no saturar redes móviles flaky. Citizens/EBs son
+// POSTs livianos → más alto.
+const CONCURRENCY_DELIVERIES = 4;
+const CONCURRENCY_LIGHT = 6;
+// Tope de pases por drain (guarda anti-bucle; el corte real es "un pase sin
+// progreso"). 100k holgado para cualquier cola real.
+const MAX_DRAIN_PASSES = 100_000;
 const STUCK_THRESHOLD_MS = 60_000;
+
+/**
+ * Ejecuta `fn` sobre `items` con un máximo de `limit` en vuelo a la vez.
+ * Reemplaza el `for ... await` secuencial (1×1) que hacía el sync eterno.
+ */
+async function mapWithConcurrency<T>(
+  items: T[],
+  limit: number,
+  fn: (item: T) => Promise<void>,
+): Promise<void> {
+  let idx = 0;
+  const workers: Promise<void>[] = [];
+  const n = Math.min(Math.max(1, limit), items.length);
+  for (let w = 0; w < n; w++) {
+    workers.push(
+      (async () => {
+        while (idx < items.length) {
+          const i = idx++;
+          await fn(items[i]);
+        }
+      })(),
+    );
+  }
+  await Promise.all(workers);
+}
 
 interface BatchTotals {
   processed: number;
@@ -132,16 +171,17 @@ export async function processSyncQueue(): Promise<BatchTotals> {
   // emitía y `syncing` quedaba true para siempre.
   let totalQueued = 0;
   try {
+    // COUNT ligero (no materializar base64 de miles de filas solo para contar).
     totalQueued =
-      listPendingCitizensByStatus('pending').length +
-      listPendingCitizensByStatus('error').length +
-      listPendingCitizensByStatus('blocked').length +
-      listPendingEbsByStatus('pending').length +
-      listPendingEbsByStatus('error').length +
-      listPendingEbsByStatus('blocked').length +
-      listDeliveriesByStatus('pending').length +
-      listDeliveriesByStatus('error').length +
-      listDeliveriesByStatus('blocked').length;
+      countPendingCitizensByStatus('pending') +
+      countPendingCitizensByStatus('error') +
+      countPendingCitizensByStatus('blocked') +
+      countPendingEbsByStatus('pending') +
+      countPendingEbsByStatus('error') +
+      countPendingEbsByStatus('blocked') +
+      countDeliveriesByStatus('pending') +
+      countDeliveriesByStatus('error') +
+      countDeliveriesByStatus('blocked');
   } catch {
     /* si la BD falla, total=0; igual emitimos los eventos */
   }
@@ -179,12 +219,24 @@ export async function processSyncQueue(): Promise<BatchTotals> {
       }
     }
 
-    // 1) Sincronizar citizens pendientes ───────────────────────────────────
-    await processCitizens(totals);
-    // 2) Sincronizar event_beneficiaries que ya tienen citizen_server_id ───
-    await processEbs(totals);
-    // 3) Sincronizar deliveries ────────────────────────────────────────────
-    await processDeliveries(totals);
+    // DRAIN: repetir pases (citizens → EBs → deliveries) hasta vaciar la cola.
+    // Antes se procesaba UN solo batch por llamada → el operador tenía que tocar
+    // "Sincronizar" decenas/cientos de veces. Ahora una pulsación sube TODO lo
+    // que se pueda. Corte: un pase sin progreso (ok===0) → solo quedan diferidas
+    // (esperando su citizen), con backoff, o bloqueadas para resolución manual.
+    // `blocked` solo se reintenta en el PRIMER pase (la pulsación del usuario),
+    // no en cada pase, para no re-pegarle en bucle a lo que de verdad está trabado.
+    for (let pass = 0; pass < MAX_DRAIN_PASSES; pass++) {
+      const passTotals: BatchTotals = { processed: 0, ok: 0, failed: 0, blocked: 0 };
+      await processCitizens(passTotals, pass === 0);
+      await processEbs(passTotals, pass === 0);
+      await processDeliveries(passTotals);
+      totals.processed += passTotals.processed;
+      totals.ok += passTotals.ok;
+      totals.failed += passTotals.failed;
+      totals.blocked += passTotals.blocked;
+      if (passTotals.ok === 0) break; // sin progreso → nada más por subir ahora
+    }
 
     return totals;
   } catch (err) {
@@ -207,22 +259,19 @@ export async function processSyncQueue(): Promise<BatchTotals> {
 
 /* ─────────────────────────── Stage helpers ─────────────────────────── */
 
-async function processCitizens(totals: BatchTotals): Promise<void> {
-  const pending = listPendingCitizensByStatus('pending');
-  const errors = listPendingCitizensByStatus('error').filter((c) =>
+async function processCitizens(totals: BatchTotals, includeBlocked: boolean): Promise<void> {
+  const pending = listPendingCitizensByStatus('pending', BATCH_SIZE);
+  const errors = listPendingCitizensByStatus('error', BATCH_SIZE).filter((c) =>
     isReady(c.nextAttemptAt),
   );
-  // Sprint 9.10: incluir 'blocked' también. Antes los blocked nunca se
-  // reintentaban automáticamente — el operador veía el conflicto y la única
-  // opción era descartarlo. Pero muchos blocked vienen de 409 (citizen ya
-  // existe). Con el backend ahora idempotente, esos 409 se resuelven
-  // automáticamente. Reintentamos al usuario tap "Sincronizar" para
-  // limpiar la cola sin perder data.
-  const blocked = listPendingCitizensByStatus('blocked');
+  // 'blocked' solo en el primer pase del drain (la pulsación del usuario): muchos
+  // vienen de 409 (citizen ya existe) que el backend idempotente resuelve solo;
+  // en pases siguientes no se reintentan para no pegarles en bucle.
+  const blocked = includeBlocked ? listPendingCitizensByStatus('blocked', BATCH_SIZE) : [];
   const queue = [...pending, ...errors, ...blocked].slice(0, BATCH_SIZE);
   if (queue.length === 0) return;
 
-  for (const c of queue) {
+  await mapWithConcurrency(queue, CONCURRENCY_LIGHT, async (c) => {
     updatePendingCitizenStatus(c.localId, 'syncing');
     emit({ type: 'item-start', id: c.localId });
     const result = await uploadCitizen(c);
@@ -249,29 +298,29 @@ async function processCitizens(totals: BatchTotals): Promise<void> {
       totals,
     });
     emit({ type: 'item-done', id: c.localId, result });
-  }
+  });
 }
 
-async function processEbs(totals: BatchTotals): Promise<void> {
+async function processEbs(totals: BatchTotals, includeBlocked: boolean): Promise<void> {
   // Solo los EBs cuyo citizen YA está sincronizado (tiene server_id).
-  const pending = listPendingEbsByStatus('pending');
-  const errors = listPendingEbsByStatus('error').filter((eb) =>
+  const pending = listPendingEbsByStatus('pending', BATCH_SIZE);
+  const errors = listPendingEbsByStatus('error', BATCH_SIZE).filter((eb) =>
     isReady(eb.nextAttemptAt),
   );
-  // Sprint 9.10: incluir 'blocked'. Mismo motivo que en processCitizens.
-  const blocked = listPendingEbsByStatus('blocked');
+  // 'blocked' solo en el primer pase del drain (mismo criterio que processCitizens).
+  const blocked = includeBlocked ? listPendingEbsByStatus('blocked', BATCH_SIZE) : [];
   const candidates = [...pending, ...errors, ...blocked].slice(0, BATCH_SIZE);
   if (candidates.length === 0) return;
 
-  for (const eb of candidates) {
+  await mapWithConcurrency(candidates, CONCURRENCY_LIGHT, async (eb) => {
     // Resolver citizen_server_id si todavía está vacío
     let citizenServerId = eb.citizenServerId;
     if (!citizenServerId) {
       const cit = getPendingCitizen(eb.citizenLocalId);
       if (!cit?.serverId) {
-        // El citizen no terminó de sincronizar → diferimos este EB.
-        // No incrementamos retry porque no es un fallo de la EB en sí.
-        continue;
+        // El citizen no terminó de sincronizar → diferimos este EB al próximo
+        // pase. `return` (no `continue`) porque ahora corre dentro de un callback.
+        return;
       }
       citizenServerId = cit.serverId;
     }
@@ -309,19 +358,19 @@ async function processEbs(totals: BatchTotals): Promise<void> {
       deviceLocalId: `eb:${eb.localId}`,
     });
     emit({ type: 'item-done', id: eb.localId, result });
-  }
+  });
 }
 
 async function processDeliveries(totals: BatchTotals): Promise<void> {
   // Tomar pending + error con backoff vencido
-  const pending = listDeliveriesByStatus('pending');
-  const errors = listDeliveriesByStatus('error').filter((d) =>
+  const pending = listDeliveriesByStatus('pending', BATCH_SIZE);
+  const errors = listDeliveriesByStatus('error', BATCH_SIZE).filter((d) =>
     isReady(d.nextAttemptAt),
   );
   const queue: PendingDelivery[] = [...pending, ...errors].slice(0, BATCH_SIZE);
   if (queue.length === 0) return;
 
-  for (const item of queue) {
+  await mapWithConcurrency(queue, CONCURRENCY_DELIVERIES, async (item) => {
     // Si la delivery referencia un citizen local, debemos resolver el
     // serverId antes de subir. Si el citizen aún no se sincronizó, dejamos
     // la delivery pending (no la marcamos error; volverá a aparecer en el
@@ -330,7 +379,7 @@ async function processDeliveries(totals: BatchTotals): Promise<void> {
     if (isLocalCitizen(item.citizenId)) {
       const cit = getPendingCitizen(item.citizenId);
       if (!cit?.serverId) {
-        continue; // diferida — no incrementar retry
+        return; // diferida (callback) — se reintenta el próximo pase, sin retry++
       }
       citizenServerId = cit.serverId;
     }
@@ -357,7 +406,7 @@ async function processDeliveries(totals: BatchTotals): Promise<void> {
       deviceLocalId: `delivery:${item.id}`,
     });
     emit({ type: 'item-done', id: item.id, result });
-  }
+  });
 }
 
 interface ApplyResultArgs {

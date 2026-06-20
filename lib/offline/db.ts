@@ -873,13 +873,26 @@ export function listDeliveriesByEvent(eventId: string): PendingDelivery[] {
   return rows.map(rowToDelivery);
 }
 
-export function listDeliveriesByStatus(status: SyncStatus): PendingDelivery[] {
+export function listDeliveriesByStatus(status: SyncStatus, limit?: number): PendingDelivery[] {
   const db = getDB();
+  // `limit` evita materializar TODAS las filas (con base64 de foto/firma) cuando
+  // solo se necesita un lote — clave para que el drain de sync no haga O(n²) de
+  // base64 ni reviente memoria en eventos de miles.
   const rows = db.getAllSync<Record<string, unknown>>(
-    `SELECT * FROM pending_deliveries WHERE sync_status = ? ORDER BY captured_at ASC`,
-    [status],
+    `SELECT * FROM pending_deliveries WHERE sync_status = ? ORDER BY captured_at ASC${limit ? ' LIMIT ?' : ''}`,
+    limit ? [status, limit] : [status],
   );
   return rows.map(rowToDelivery);
+}
+
+/** Conteo ligero por estado (COUNT, sin materializar base64). */
+export function countDeliveriesByStatus(status: SyncStatus): number {
+  const db = getDB();
+  const row = db.getFirstSync<{ c: number }>(
+    `SELECT COUNT(*) AS c FROM pending_deliveries WHERE sync_status = ?`,
+    [status],
+  );
+  return row?.c ?? 0;
 }
 
 export function getPendingDelivery(id: string): PendingDelivery | null {
@@ -1117,13 +1130,24 @@ export function getPendingCitizen(localId: string): PendingCitizen | null {
 
 export function listPendingCitizensByStatus(
   status: SyncStatus,
+  limit?: number,
 ): PendingCitizen[] {
   const db = getDB();
   const rows = db.getAllSync<Record<string, unknown>>(
-    `SELECT * FROM pending_citizens WHERE sync_status = ? ORDER BY created_at ASC`,
-    [status],
+    `SELECT * FROM pending_citizens WHERE sync_status = ? ORDER BY created_at ASC${limit ? ' LIMIT ?' : ''}`,
+    limit ? [status, limit] : [status],
   );
   return rows.map(rowToPendingCitizen);
+}
+
+/** Conteo ligero por estado (COUNT). */
+export function countPendingCitizensByStatus(status: SyncStatus): number {
+  const db = getDB();
+  const row = db.getFirstSync<{ c: number }>(
+    `SELECT COUNT(*) AS c FROM pending_citizens WHERE sync_status = ?`,
+    [status],
+  );
+  return row?.c ?? 0;
 }
 
 export function updatePendingCitizenStatus(
@@ -1249,14 +1273,25 @@ export function getPendingEbByCitizen(
 
 export function listPendingEbsByStatus(
   status: SyncStatus,
+  limit?: number,
 ): PendingEventBeneficiary[] {
   const db = getDB();
   const rows = db.getAllSync<Record<string, unknown>>(
     `SELECT * FROM pending_event_beneficiaries
-       WHERE sync_status = ? ORDER BY created_at ASC`,
-    [status],
+       WHERE sync_status = ? ORDER BY created_at ASC${limit ? ' LIMIT ?' : ''}`,
+    limit ? [status, limit] : [status],
   );
   return rows.map(rowToPendingEb);
+}
+
+/** Conteo ligero por estado (COUNT). */
+export function countPendingEbsByStatus(status: SyncStatus): number {
+  const db = getDB();
+  const row = db.getFirstSync<{ c: number }>(
+    `SELECT COUNT(*) AS c FROM pending_event_beneficiaries WHERE sync_status = ?`,
+    [status],
+  );
+  return row?.c ?? 0;
 }
 
 export function updatePendingEbStatus(
