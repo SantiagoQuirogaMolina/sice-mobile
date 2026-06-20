@@ -4,12 +4,17 @@
  * Búsqueda LIVE por documento o nombre con SQLite (índice → <10ms).
  * Filtros por estado: todos / pendientes / entregados.
  *
- * Cada item al tocar abre el wizard de captura (Sprint 9.2). Por ahora
- * muestra un alert con los datos.
+ * Rendimiento (v1.26): la lista PAGINA en SQLite (LIMIT/OFFSET) y la FlatList
+ * está virtualizada. Antes traía las 20.000 filas a RAM y filtraba en JS en cada
+ * render → se congelaba al abrir y al teclear. Ahora cada filtro va en el WHERE y
+ * solo se cargan ~50 filas por página. Sigue 100% offline.
+ *
+ * Cada item al tocar abre el wizard de captura.
  */
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import {
+  ActivityIndicator,
   FlatList,
   Modal,
   Pressable,
@@ -26,7 +31,9 @@ import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { Screen } from '../../../../components/Screen';
 import { beneficiariesService } from '../../../../lib/api/services/beneficiaries.service';
 import {
-  searchBeneficiaries,
+  countBeneficiaries,
+  listBeneficiarySectors,
+  searchBeneficiariesPage,
   type CachedBeneficiary,
 } from '../../../../lib/offline/db';
 import {
@@ -40,17 +47,36 @@ import {
 
 type Filter = 'all' | 'pending' | 'delivered';
 
+const PAGE = 50; // filas por página — se cargan más al llegar al final
+
 export default function BeneficiariesScreen() {
   const { id: eventId } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
   const [query, setQuery] = useState('');
+  const [debouncedQuery, setDebouncedQuery] = useState('');
   const [filter, setFilter] = useState<Filter>('all');
   const [sectorFilter, setSectorFilter] = useState<string>('all');
   const [sectorModalOpen, setSectorModalOpen] = useState(false);
-  const [fullList, setFullList] = useState<CachedBeneficiary[]>([]);
+
+  const [page, setPage] = useState<CachedBeneficiary[]>([]);
+  const [hasMore, setHasMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const offsetRef = useRef(0);
+
+  const [counts, setCounts] = useState({ all: 0, pending: 0, delivered: 0 });
+  const [sectors, setSectors] = useState<{ name: string; count: number }[]>([]);
+  const [total, setTotal] = useState(0);
+
   const [loading, setLoading] = useState(true);
   const [loadedCount, setLoadedCount] = useState(0);
   const [refreshing, setRefreshing] = useState(false);
+
+  // Debounce de la búsqueda: re-consultar SQL por keystroke es barato, pero
+  // ~250ms evita una consulta por tecla cuando el operador escribe rápido.
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedQuery(query), 250);
+    return () => clearTimeout(t);
+  }, [query]);
 
   const loadFromBackend = async () => {
     if (!eventId) return;
@@ -63,83 +89,98 @@ export default function BeneficiariesScreen() {
     setRefreshing(false);
   };
 
-  // Carga TODA la lista cacheada del evento (offline). La búsqueda y los filtros
-  // (sector/estado) se aplican en JS sobre esta lista → funcionan 100% sin
-  // internet para TODA la lista asignada al gestor, sin tope de 200.
-  const refreshLocal = () => {
+  // Carga la PRIMERA página con los filtros actuales (offline, SQLite).
+  const reload = useCallback(() => {
     if (!eventId) return;
-    setFullList(searchBeneficiaries(eventId, '', 20000));
-  };
+    const first = searchBeneficiariesPage(eventId, debouncedQuery, {
+      status: filter,
+      sector: sectorFilter,
+      limit: PAGE,
+      offset: 0,
+    });
+    setPage(first);
+    offsetRef.current = first.length;
+    setHasMore(first.length === PAGE);
+  }, [eventId, debouncedQuery, filter, sectorFilter]);
 
-  // Initial mount: cargar de cache + traer del backend.
+  // Carga la siguiente página y la concatena (scroll infinito).
+  const loadMore = useCallback(() => {
+    if (!eventId || loadingMore || !hasMore) return;
+    setLoadingMore(true);
+    const next = searchBeneficiariesPage(eventId, debouncedQuery, {
+      status: filter,
+      sector: sectorFilter,
+      limit: PAGE,
+      offset: offsetRef.current,
+    });
+    setPage((prev) => [...prev, ...next]);
+    offsetRef.current += next.length;
+    setHasMore(next.length === PAGE);
+    setLoadingMore(false);
+  }, [eventId, debouncedQuery, filter, sectorFilter, hasMore, loadingMore]);
+
+  // Conteos de los chips — por sector seleccionado (COUNT con índice, sin LIKE).
+  const refreshCounts = useCallback(() => {
+    if (!eventId) return;
+    setCounts({
+      all: countBeneficiaries(eventId, { sector: sectorFilter }),
+      pending: countBeneficiaries(eventId, { sector: sectorFilter, status: 'pending' }),
+      delivered: countBeneficiaries(eventId, { sector: sectorFilter, status: 'delivered' }),
+    });
+  }, [eventId, sectorFilter]);
+
+  // Sectores + total del evento (para el dropdown).
+  const refreshSectorsAndTotal = useCallback(() => {
+    if (!eventId) return;
+    setSectors(listBeneficiarySectors(eventId));
+    setTotal(countBeneficiaries(eventId, {}));
+  }, [eventId]);
+
+  // Mount: traer del backend en segundo plano; mostrar el cache de inmediato.
   useEffect(() => {
-    refreshLocal();
-    // Si la lista YA está en el dispositivo, mostrarla de inmediato (sin la
-    // pantalla "Descargando"); el refresh del backend corre en segundo plano.
-    // Solo se ve "Descargando" la PRIMERA vez (cache vacío).
-    if (eventId && searchBeneficiaries(eventId, '', 1).length > 0) {
-      setLoading(false);
-    }
-    void loadFromBackend().then(() => refreshLocal());
+    if (!eventId) return;
+    refreshSectorsAndTotal();
+    if (countBeneficiaries(eventId, {}) > 0) setLoading(false);
+    void loadFromBackend().then(() => {
+      refreshSectorsAndTotal();
+      refreshCounts();
+      reload();
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [eventId]);
 
-  // Refresca el cache local cada vez que la pantalla recupera el foco.
-  // Importante: tras hacer una captura el wizard hace router.back() y
-  // queremos que el beneficiario aparezca como "OK" inmediatamente sin
-  // recargar la app o pulir-to-refresh manual.
+  // Re-paginar cuando cambian los filtros/búsqueda (reload depende de ellos).
+  useEffect(() => {
+    reload();
+  }, [reload]);
+
+  // Re-contar los chips cuando cambia el sector.
+  useEffect(() => {
+    refreshCounts();
+  }, [refreshCounts]);
+
+  // Al recuperar el foco (p.ej. tras capturar): refrescar lista + conteos para
+  // que el beneficiario aparezca como OK inmediatamente.
   useFocusEffect(
     useCallback(() => {
-      refreshLocal();
+      reload();
+      refreshCounts();
+      refreshSectorsAndTotal();
       // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [eventId]),
+    }, [eventId, debouncedQuery, filter, sectorFilter]),
   );
 
-  // Sectores únicos de mi lista (con conteo) para el filtro — offline.
-  const sectorOptions = useMemo(() => {
-    const c = new Map<string, number>();
-    for (const b of fullList) {
-      const key = b.sectorName ?? 'Sin sector';
-      c.set(key, (c.get(key) ?? 0) + 1);
-    }
-    return Array.from(c.entries())
-      .map(([name, count]) => ({ name, count }))
-      .sort((a, b) => a.name.localeCompare(b.name, 'es'));
-  }, [fullList]);
-
-  // Base filtrada por sector (los conteos y chips de estado se calculan sobre
-  // el sector elegido — si hay uno seleccionado).
-  const bySector = useMemo(
-    () =>
-      sectorFilter === 'all'
-        ? fullList
-        : fullList.filter((b) => (b.sectorName ?? 'Sin sector') === sectorFilter),
-    [fullList, sectorFilter],
+  const renderItem = useCallback(
+    ({ item }: { item: CachedBeneficiary }) => (
+      <BeneficiaryRow
+        item={item}
+        onPress={() =>
+          router.push(`/event/${eventId}/delivery/${item.citizenId}` as never)
+        }
+      />
+    ),
+    [eventId, router],
   );
-
-  const counts = useMemo(() => {
-    let pending = 0;
-    let delivered = 0;
-    for (const b of bySector) {
-      if (b.deliveryStatus === 'delivered' || b.hasLocalDelivery) delivered++;
-      else pending++;
-    }
-    return { all: bySector.length, pending, delivered };
-  }, [bySector]);
-
-  // Búsqueda (documento/nombre) + estado, en JS sobre el sector elegido.
-  const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase().replace(/[\s.\-_]/g, '');
-    const qName = query.trim().toLowerCase();
-    return bySector.filter((b) => {
-      const isDone = b.deliveryStatus === 'delivered' || b.hasLocalDelivery;
-      if (filter === 'delivered' && !isDone) return false;
-      if (filter === 'pending' && isDone) return false;
-      if (q && !b.documentNormalized.includes(q) && !b.nameNormalized.includes(qName))
-        return false;
-      return true;
-    });
-  }, [bySector, filter, query]);
 
   if (loading) {
     return (
@@ -177,10 +218,8 @@ export default function BeneficiariesScreen() {
         />
       </View>
 
-      {/* Filtro por sector (solo si tengo más de uno) — dropdown 100% offline.
-          Un dropdown+modal aguanta nombres largos y muchos sectores sin
-          recortarse (los chips horizontales se encogían por el flex del Screen). */}
-      {sectorOptions.length > 1 && (
+      {/* Filtro por sector (solo si tengo más de uno) — dropdown 100% offline. */}
+      {sectors.length > 1 && (
         <View style={styles.sectorWrap}>
           <Pressable
             onPress={() => setSectorModalOpen(true)}
@@ -189,8 +228,8 @@ export default function BeneficiariesScreen() {
             <Ionicons name="location-outline" size={16} color={colors.cyan} />
             <Text style={styles.sectorSelectText} numberOfLines={1}>
               {sectorFilter === 'all'
-                ? `Todos los sectores · ${fullList.length}`
-                : `${sectorFilter} · ${counts.all}`}
+                ? `Todos los sectores · ${total.toLocaleString('es-CO')}`
+                : `${sectorFilter} · ${counts.all.toLocaleString('es-CO')}`}
             </Text>
             <Ionicons name="chevron-down" size={16} color={colors.textMuted} />
           </Pressable>
@@ -218,21 +257,38 @@ export default function BeneficiariesScreen() {
         />
       </View>
 
-      {/* List */}
+      {/* List — virtualizada + paginada */}
       <FlatList
-        data={filtered}
+        data={page}
         keyExtractor={(b) => b.id}
         contentContainerStyle={styles.listContent}
+        initialNumToRender={15}
+        maxToRenderPerBatch={10}
+        windowSize={7}
+        removeClippedSubviews
+        onEndReachedThreshold={0.5}
+        onEndReached={loadMore}
         refreshControl={
           <RefreshControl
             refreshing={refreshing}
             onRefresh={() => {
               setRefreshing(true);
-              void loadFromBackend().then(() => refreshLocal());
+              void loadFromBackend().then(() => {
+                refreshSectorsAndTotal();
+                refreshCounts();
+                reload();
+              });
             }}
             tintColor={colors.cyan}
             colors={[colors.cyan]}
           />
+        }
+        ListFooterComponent={
+          hasMore ? (
+            <View style={styles.footer}>
+              <ActivityIndicator color={colors.cyan} />
+            </View>
+          ) : null
         }
         ListEmptyComponent={
           <View style={styles.empty}>
@@ -244,17 +300,7 @@ export default function BeneficiariesScreen() {
             </Text>
           </View>
         }
-        renderItem={({ item }) => (
-          <BeneficiaryRow
-            item={item}
-            onPress={() => {
-              // Sprint 9.2: navegar al wizard de captura
-              router.push(
-                `/event/${eventId}/delivery/${item.citizenId}` as never,
-              );
-            }}
-          />
-        )}
+        renderItem={renderItem}
       />
 
       {/* Modal selector de sector — aguanta nombres largos + scroll */}
@@ -274,14 +320,14 @@ export default function BeneficiariesScreen() {
             <ScrollView style={{ maxHeight: 420 }}>
               <SectorOption
                 label="Todos los sectores"
-                count={fullList.length}
+                count={total}
                 active={sectorFilter === 'all'}
                 onPress={() => {
                   setSectorFilter('all');
                   setSectorModalOpen(false);
                 }}
               />
-              {sectorOptions.map((s) => (
+              {sectors.map((s) => (
                 <SectorOption
                   key={s.name}
                   label={s.name}
@@ -370,7 +416,9 @@ function FilterChip({
   );
 }
 
-function BeneficiaryRow({
+// React.memo: con la lista virtualizada, evita re-renderizar las filas visibles
+// cuando cambia el estado del padre (búsqueda, conteos…).
+const BeneficiaryRow = memo(function BeneficiaryRow({
   item,
   onPress,
 }: {
@@ -428,7 +476,7 @@ function BeneficiaryRow({
       </View>
     </Pressable>
   );
-}
+});
 
 function initials(name: string): string {
   const parts = name.trim().split(/\s+/).filter(Boolean);
@@ -562,6 +610,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.lg,
     paddingBottom: spacing.xxl,
     flexGrow: 1,
+  },
+  footer: {
+    paddingVertical: spacing.lg,
+    alignItems: 'center',
   },
   empty: {
     padding: spacing.xl,

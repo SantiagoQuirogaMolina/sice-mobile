@@ -707,6 +707,101 @@ export function searchBeneficiaries(
   return rows.map(rowToBeneficiary);
 }
 
+/* ── Paginación de beneficiarios (offline) — filtro + límite en SQLite ──────
+ * Antes la pantalla traía 20.000 filas a RAM y filtraba en JS en cada render
+ * (congelaba la lista al abrirla y al teclear). Aquí status/sector/búsqueda van
+ * en el WHERE y la lista pagina con LIMIT/OFFSET → el SELECT toca solo las filas
+ * visibles vía índice (<10ms). Sigue 100% local (SQLite), sin internet. */
+
+export type BeneficiaryStatus = 'all' | 'pending' | 'delivered';
+export const NO_SECTOR_LABEL = 'Sin sector';
+
+interface BenefFilter {
+  status?: BeneficiaryStatus;
+  sector?: string | null; // 'all' / null = todos; NO_SECTOR_LABEL = sector_name NULL
+  query?: string;
+}
+
+// Construye las condiciones WHERE (sin la palabra 'WHERE') + params + ORDER BY.
+function buildBenefWhere(
+  eventId: string,
+  f: BenefFilter,
+): { where: string; params: (string | number)[]; orderBy: string } {
+  const conds: string[] = ['event_id = ?'];
+  const params: (string | number)[] = [eventId];
+
+  if (f.status === 'pending') {
+    conds.push(`delivery_status != 'delivered' AND has_local_delivery = 0`);
+  } else if (f.status === 'delivered') {
+    conds.push(`(delivery_status = 'delivered' OR has_local_delivery = 1)`);
+  }
+
+  if (f.sector && f.sector !== 'all') {
+    if (f.sector === NO_SECTOR_LABEL) {
+      conds.push('sector_name IS NULL');
+    } else {
+      conds.push('sector_name = ?');
+      params.push(f.sector);
+    }
+  }
+
+  let orderBy = 'full_name ASC';
+  const trimmed = (f.query ?? '').trim();
+  if (trimmed) {
+    const docNorm = normalizeDocument(trimmed);
+    if (/^\d+$/.test(docNorm)) {
+      conds.push('document_normalized LIKE ?');
+      params.push(`${docNorm}%`);
+      orderBy = 'document_normalized ASC';
+    } else {
+      conds.push('name_normalized LIKE ?');
+      params.push(`%${normalizeName(trimmed)}%`);
+    }
+  }
+
+  return { where: conds.join(' AND '), params, orderBy };
+}
+
+/** Una página de beneficiarios con filtros aplicados en SQL (offline). */
+export function searchBeneficiariesPage(
+  eventId: string,
+  query: string,
+  opts: { status?: BeneficiaryStatus; sector?: string | null; limit: number; offset: number },
+): CachedBeneficiary[] {
+  const db = getDB();
+  const { where, params, orderBy } = buildBenefWhere(eventId, { ...opts, query });
+  return db
+    .getAllSync<Record<string, unknown>>(
+      `SELECT * FROM cached_beneficiaries WHERE ${where} ORDER BY ${orderBy} LIMIT ? OFFSET ?`,
+      [...params, opts.limit, opts.offset],
+    )
+    .map(rowToBeneficiary);
+}
+
+/** COUNT(*) con los mismos filtros — alimenta los chips sin materializar filas. */
+export function countBeneficiaries(eventId: string, f: BenefFilter = {}): number {
+  const db = getDB();
+  const { where, params } = buildBenefWhere(eventId, f);
+  const row = db.getFirstSync<{ n: number }>(
+    `SELECT COUNT(*) AS n FROM cached_beneficiaries WHERE ${where}`,
+    params,
+  );
+  return row?.n ?? 0;
+}
+
+/** Sectores únicos del evento con su conteo (para el filtro) — offline. */
+export function listBeneficiarySectors(eventId: string): { name: string; count: number }[] {
+  const db = getDB();
+  const rows = db.getAllSync<{ sector_name: string | null; n: number }>(
+    `SELECT sector_name, COUNT(*) AS n FROM cached_beneficiaries
+       WHERE event_id = ? GROUP BY sector_name`,
+    [eventId],
+  );
+  return rows
+    .map((r) => ({ name: r.sector_name ?? NO_SECTOR_LABEL, count: r.n }))
+    .sort((a, b) => a.name.localeCompare(b.name, 'es'));
+}
+
 export function findBeneficiaryByDoc(
   eventId: string,
   documentNumber: string,

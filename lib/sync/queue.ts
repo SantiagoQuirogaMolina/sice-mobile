@@ -85,11 +85,20 @@ function emit(e: QueueEvent): void {
 
 /* ─────────────────────────── Backoff ─────────────────────────── */
 
-/** 30s · 60s · 2min · 4min · 8min · 16min · 30min (cap). */
+/** 5s · 10s · 20s · 40s · 80s … 30min (cap).
+ *  Base corta (antes 30s): un error TRANSITORIO (timeout/5xx/red) se reintenta
+ *  pronto y la cola termina en segundos, no en "oleadas" separadas por 30s que
+ *  parecían un bloqueo. Los errores permanentes (4xx) no entran acá (van a blocked). */
 function nextBackoffISO(retryCount: number): string {
-  const seconds = Math.min(30 * 2 ** retryCount, 30 * 60);
+  const seconds = Math.min(5 * 2 ** retryCount, 30 * 60);
   return new Date(Date.now() + seconds * 1000).toISOString();
 }
+
+/** Cede el hilo de JS al event loop. En RN el JS corre en UN solo hilo: sin
+ *  estos respiros, el drain monopoliza el hilo y la UI se congela mientras
+ *  sincroniza. Un `setTimeout(0)` deja que React pinte el progreso y atienda
+ *  los toques entre uploads. */
+const yieldToUI = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
 
 /** ¿La fecha ISO de nextAttempt ya pasó? */
 function isReady(at: string | null): boolean {
@@ -105,6 +114,28 @@ let inFlight = false;
 // el mutex tragaba el disparo → al reconectar no se sincronizaba si justo había
 // uno en curso.
 let pendingRetry = false;
+
+// Reintento AUTOMÁTICO de la "segunda oleada": si un drain deja items en 'error'
+// (transitorios con backoff), reprogramamos un reintento para vaciar la cola sin
+// que el operador toque de nuevo (antes veía "2 sincronizadas" y silencio hasta
+// volver a pulsar). Se autolimita: si insiste varias veces sin progreso, para y
+// deja que el auto-sync por reconexión/AppState lo retome.
+let retryTimer: ReturnType<typeof setTimeout> | null = null;
+let autoRetryCount = 0;
+const AUTO_RETRY_DELAYS_MS = [6_000, 11_000, 21_000, 41_000, 81_000, 120_000];
+
+function scheduleAutoRetry(retryableFailed: number, ok: number): void {
+  if (ok > 0) autoRetryCount = 0; // hubo progreso → reiniciar la insistencia
+  if (retryableFailed <= 0) return; // nada reintentable (todo subió o quedó blocked)
+  if (autoRetryCount >= AUTO_RETRY_DELAYS_MS.length) return; // insistir de más no ayuda
+  const delay = AUTO_RETRY_DELAYS_MS[autoRetryCount];
+  autoRetryCount += 1;
+  if (retryTimer) clearTimeout(retryTimer);
+  retryTimer = setTimeout(() => {
+    retryTimer = null;
+    void processSyncQueue();
+  }, delay);
+}
 
 /* ─────────────────────────── Public API ─────────────────────────── */
 
@@ -140,6 +171,9 @@ async function mapWithConcurrency<T>(
         while (idx < items.length) {
           const i = idx++;
           await fn(items[i]);
+          // Respiro tras cada item → la UI no se traba durante el drain y el
+          // contador de progreso sube fluido (1, 2, 3…) en vez de saltar al final.
+          await yieldToUI();
         }
       })(),
     );
@@ -152,7 +186,19 @@ interface BatchTotals {
   ok: number;
   failed: number;
   blocked: number;
+  /** Errores REINTENTABLES (5xx/red/401/timeout) — los que justifican la
+   *  "segunda oleada" automática. Distinto de `blocked` (4xx/conflict, no se
+   *  reintentan) y de `failed` (que suma ambos). */
+  retryable: number;
 }
+
+const emptyTotals = (): BatchTotals => ({
+  processed: 0,
+  ok: 0,
+  failed: 0,
+  blocked: 0,
+  retryable: 0,
+});
 
 /**
  * Toma un batch y lo procesa en 3 etapas:
@@ -165,9 +211,14 @@ interface BatchTotals {
 export async function processSyncQueue(): Promise<BatchTotals> {
   if (inFlight) {
     pendingRetry = true; // se re-lanza al terminar el drain en curso
-    return { processed: 0, ok: 0, failed: 0, blocked: 0 };
+    return emptyTotals();
   }
   inFlight = true;
+  // Si había un reintento automático programado, esta corrida lo cubre.
+  if (retryTimer) {
+    clearTimeout(retryTimer);
+    retryTimer = null;
+  }
 
   // Sprint 9.10: SIEMPRE emitir un batch-start y un batch-end aun si no
   // hay nada pendiente o si algún stage lanza excepción. Antes la UI se
@@ -193,7 +244,7 @@ export async function processSyncQueue(): Promise<BatchTotals> {
   }
   emit({ type: 'batch-start', total: totalQueued });
 
-  const totals: BatchTotals = { processed: 0, ok: 0, failed: 0, blocked: 0 };
+  const totals = emptyTotals();
   try {
     // 0) Recovery: items en 'syncing' por más de 60s → reset a pending.
     //    Pasa si la app muere a mitad de un upload (kill OS / swipe-close).
@@ -233,7 +284,7 @@ export async function processSyncQueue(): Promise<BatchTotals> {
     // `blocked` solo se reintenta en el PRIMER pase (la pulsación del usuario),
     // no en cada pase, para no re-pegarle en bucle a lo que de verdad está trabado.
     for (let pass = 0; pass < MAX_DRAIN_PASSES; pass++) {
-      const passTotals: BatchTotals = { processed: 0, ok: 0, failed: 0, blocked: 0 };
+      const passTotals = emptyTotals();
       await processCitizens(passTotals, pass === 0);
       await processEbs(passTotals, pass === 0);
       await processDeliveries(passTotals);
@@ -241,7 +292,14 @@ export async function processSyncQueue(): Promise<BatchTotals> {
       totals.ok += passTotals.ok;
       totals.failed += passTotals.failed;
       totals.blocked += passTotals.blocked;
-      if (passTotals.ok === 0) break; // sin progreso → nada más por subir ahora
+      totals.retryable += passTotals.retryable;
+      // Corte por PASE VACÍO (no por "sin éxito"): si este pase no procesó nada,
+      // la cola está drenada para AHORA (lo que queda son items con backoff aún
+      // vigente o diferidos). Antes cortaba con ok===0 aun cuando había items que
+      // SÍ se intentaron-y-fallaron → declaraba "listo" antes de tiempo.
+      if (passTotals.processed === 0) break;
+      // Respiro entre pases (3 stages encadenados) para no micro-trabar la UI.
+      await yieldToUI();
     }
 
     return totals;
@@ -265,6 +323,10 @@ export async function processSyncQueue(): Promise<BatchTotals> {
     if (pendingRetry) {
       pendingRetry = false;
       void processSyncQueue();
+    } else {
+      // Sin re-disparo manual: si quedaron items en 'error' (transitorios), la
+      // "segunda oleada" se reintenta SOLA en unos segundos.
+      scheduleAutoRetry(totals.retryable, totals.ok);
     }
   }
 }
@@ -446,6 +508,7 @@ function applyResult(args: ApplyResultArgs): void {
   } else {
     onError(result.message, nextBackoffISO(retryCount));
     totals.failed += 1;
+    totals.retryable += 1;
   }
 }
 
