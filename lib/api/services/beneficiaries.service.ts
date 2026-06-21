@@ -13,7 +13,8 @@ import {
   listBeneficiariesByEvent,
   normalizeDocument,
   normalizeName,
-  replaceBeneficiariesByEvent,
+  pruneBeneficiariesByEvent,
+  upsertBeneficiariesPage,
   type CachedBeneficiary,
   type DocumentType,
   type ZonaType,
@@ -75,24 +76,36 @@ export const beneficiariesService = {
     onProgress?: (loaded: number) => void,
   ): Promise<CachedBeneficiary[]> {
     try {
-      // Fetch-all paginado: el gestor debe descargar TODA su lista (miles) para
-      // trabajar 100% offline, no solo la primera página. Paramos cuando una
-      // página viene incompleta. Tope de seguridad: 50 páginas (100k).
-      // `onProgress` reporta el acumulado tras cada página → la UI muestra una
-      // barra de progreso y no se "siente trabada" con listas grandes.
-      const PAGE = 2000;
-      const all: BackendBeneficiary[] = [];
-      for (let i = 0; i < 50; i++) {
+      // Descarga INCREMENTAL: persistimos cada página a SQLite apenas llega, en
+      // vez de acumular las 20.000 en RAM y volcarlas al final (eso bloqueaba la
+      // pantalla minutos en la primera entrada). La PRIMERA página es chica (200)
+      // para que la lista aparezca en ~300ms; el resto va en bloques grandes
+      // (1500) para minimizar round-trips. `onProgress` se llama TRAS persistir →
+      // el caller re-lee SQLite y muestra/crece la lista sin esperar el total.
+      const FIRST_PAGE = 200;
+      const BULK_PAGE = 1500;
+      const keepCitizenIds: string[] = [];
+      let total = 0;
+      let offset = 0;
+      for (let i = 0; i < 500; i++) {
+        const limit = i === 0 ? FIRST_PAGE : BULK_PAGE;
         const page = await api.get<BackendBeneficiary[]>(
-          `/api/v1/events/${eventId}/beneficiaries?limit=${PAGE}&offset=${i * PAGE}`,
+          `/api/v1/events/${eventId}/beneficiaries?limit=${limit}&offset=${offset}`,
         );
-        all.push(...page);
-        onProgress?.(all.length);
-        if (page.length < PAGE) break;
+        if (page.length > 0) {
+          upsertBeneficiariesPage(eventId, page.map((b) => mapBeneficiary(b, eventId)));
+          for (const b of page) keepCitizenIds.push(b.citizenId);
+          total += page.length;
+          offset += page.length;
+          onProgress?.(total);
+        }
+        if (page.length < limit) break;
       }
-      const cached = all.map((b) => mapBeneficiary(b, eventId));
-      // Replace en el cache (función es safe — no hace wipe si vacío)
-      replaceBeneficiariesByEvent(eventId, cached);
+      // Reconciliar UNA vez al final: borrar los que el backend ya no devuelve
+      // (sin re-escribir las 20k). Solo si bajó algo (si red falló, no toca cache).
+      if (keepCitizenIds.length > 0) {
+        pruneBeneficiariesByEvent(eventId, keepCitizenIds);
+      }
       return listBeneficiariesByEvent(eventId);
     } catch (err) {
       if (err instanceof ApiError && err.code === 'NETWORK_ERROR') {

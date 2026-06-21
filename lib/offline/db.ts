@@ -655,6 +655,95 @@ export function replaceBeneficiariesByEvent(
   });
 }
 
+/**
+ * Upsert INCREMENTAL de una página de beneficiarios (descarga por bloques).
+ *
+ * A diferencia de replaceBeneficiariesByEvent (que borra+reemplaza TODO de una
+ * y solo persiste al final del fetch-all), esto persiste cada página apenas
+ * llega → la lista SQLite crece EN VIVO y la pantalla muestra las primeras 50
+ * filas sin esperar las 20.000. Preserva has_local_delivery. NO borra nada (la
+ * limpieza de los que ya no están la hace pruneBeneficiariesByEvent al final).
+ */
+export function upsertBeneficiariesPage(
+  eventId: string,
+  items: CachedBeneficiary[],
+): void {
+  if (items.length === 0) return;
+  const db = getDB();
+  db.withTransactionSync(() => {
+    // Preservar has_local_delivery existente SOLO para los citizen de esta página.
+    const ids = items.map((b) => b.citizenId);
+    const placeholders = ids.map(() => '?').join(',');
+    const existing = db.getAllSync<{ citizen_id: string; has_local_delivery: number }>(
+      `SELECT citizen_id, has_local_delivery FROM cached_beneficiaries
+         WHERE event_id = ? AND citizen_id IN (${placeholders})`,
+      [eventId, ...ids],
+    );
+    const localFlags = new Map<string, boolean>();
+    for (const row of existing) {
+      if (row.has_local_delivery) localFlags.set(row.citizen_id, true);
+    }
+    for (const b of items) {
+      const preserveLocal = localFlags.get(b.citizenId) || b.hasLocalDelivery;
+      db.runSync(
+        `INSERT OR REPLACE INTO cached_beneficiaries
+           (id, event_id, citizen_id, document_type, document_number,
+            document_normalized, full_name, name_normalized, sector_id,
+            sector_name, zona, delivery_status, has_local_delivery)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          b.id,
+          eventId,
+          b.citizenId,
+          b.documentType,
+          b.documentNumber,
+          b.documentNormalized,
+          b.fullName,
+          b.nameNormalized,
+          b.sectorId,
+          b.sectorName,
+          b.zona,
+          b.deliveryStatus,
+          preserveLocal ? 1 : 0,
+        ],
+      );
+    }
+  });
+}
+
+/**
+ * Borra del cache los beneficiarios del evento cuyo citizen NO está en
+ * keepCitizenIds (los que el backend ya no devuelve: re-asignados, removidos),
+ * preservando los pending_citizens locales aún sin subir. Se llama UNA vez al
+ * final de la descarga incremental para reconciliar, sin re-escribir las 20k.
+ */
+export function pruneBeneficiariesByEvent(
+  eventId: string,
+  keepCitizenIds: string[],
+): void {
+  const db = getDB();
+  const keep = new Set(keepCitizenIds);
+  db.withTransactionSync(() => {
+    const existing = db.getAllSync<{ citizen_id: string }>(
+      `SELECT citizen_id FROM cached_beneficiaries WHERE event_id = ?`,
+      [eventId],
+    );
+    const pendingLocal = new Set(
+      db
+        .getAllSync<{ local_id: string }>(`SELECT local_id FROM pending_citizens`)
+        .map((r) => r.local_id),
+    );
+    for (const row of existing) {
+      if (keep.has(row.citizen_id)) continue;
+      if (pendingLocal.has(row.citizen_id)) continue; // local sin subir → no borrar
+      db.runSync(
+        `DELETE FROM cached_beneficiaries WHERE event_id = ? AND citizen_id = ?`,
+        [eventId, row.citizen_id],
+      );
+    }
+  });
+}
+
 export function listBeneficiariesByEvent(eventId: string): CachedBeneficiary[] {
   const db = getDB();
   const rows = db.getAllSync<Record<string, unknown>>(

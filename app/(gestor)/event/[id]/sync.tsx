@@ -67,6 +67,7 @@ export default function SyncScreen() {
     total: 0,
     done: 0,
   });
+  const [autoRetry, setAutoRetry] = useState<{ inSeconds: number; pending: number } | null>(null);
 
   const refresh = () => {
     if (!eventId) return;
@@ -105,6 +106,7 @@ export default function SyncScreen() {
     const unsub = subscribeQueueEvents((e) => {
       if (e.type === 'batch-start') {
         setProgress({ inFlight: true, total: e.total, done: 0 });
+        setAutoRetry(null);
       }
       if (e.type === 'item-done') {
         setProgress((p) => ({ ...p, done: p.done + 1 }));
@@ -114,10 +116,25 @@ export default function SyncScreen() {
         setProgress({ inFlight: false, total: 0, done: 0 });
         refresh();
       }
+      if (e.type === 'retry-scheduled') {
+        setAutoRetry({ inSeconds: e.inSeconds, pending: e.pending });
+      }
+      if (e.type === 'retry-firing') {
+        setAutoRetry(null);
+      }
     });
     return unsub;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [eventId]);
+
+  // Countdown del reintento automático (1s) → "Reintentando en Ns…".
+  useEffect(() => {
+    if (!autoRetry) return;
+    const t = setInterval(() => {
+      setAutoRetry((a) => (a && a.inSeconds > 0 ? { ...a, inSeconds: a.inSeconds - 1 } : a));
+    }, 1000);
+    return () => clearInterval(t);
+  }, [autoRetry === null]);
 
   const buckets = useMemo(() => {
     const acc = {
@@ -343,6 +360,17 @@ export default function SyncScreen() {
             />
           </View>
         )}
+        {autoRetry && !progress.inFlight && (
+          <View style={styles.autoRetryWrap}>
+            <Text style={styles.autoRetryText}>
+              ↻ Reintentando solo en {autoRetry.inSeconds}s… ({autoRetry.pending} pendiente
+              {autoRetry.pending === 1 ? '' : 's'})
+            </Text>
+            <Text style={styles.autoRetryHint}>
+              No tienes que hacer nada — la app reintenta automáticamente.
+            </Text>
+          </View>
+        )}
       </View>
 
       {/* Lista */}
@@ -540,6 +568,27 @@ const styles = StyleSheet.create({
   },
   actions: {
     paddingHorizontal: spacing.lg,
+  },
+  autoRetryWrap: {
+    marginTop: spacing.md,
+    backgroundColor: colors.cyanSoft,
+    borderRadius: radii.md,
+    padding: spacing.md,
+    borderLeftWidth: 3,
+    borderLeftColor: colors.cyan,
+  },
+  autoRetryText: {
+    color: colors.cyan,
+    fontSize: fontSizes.sm,
+    fontWeight: fontWeights.bold,
+    textAlign: 'center',
+    fontVariant: ['tabular-nums'],
+  },
+  autoRetryHint: {
+    color: colors.textSecondary,
+    fontSize: fontSizes.xs,
+    textAlign: 'center',
+    marginTop: 2,
   },
   listContent: {
     padding: spacing.lg,

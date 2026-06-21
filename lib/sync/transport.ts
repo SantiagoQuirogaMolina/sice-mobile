@@ -261,29 +261,29 @@ export async function uploadDelivery(
     // siempre y habría dejado en 'blocked' toda captura de un evento que no
     // pide firma/foto.
 
-    // 1) Subir firma si se capturó.
-    // Sprint 9.3.1: recomputamos el SHA-256 desde el dataUrl antes de subir
-    // (auto-cura hashes viejos calculados sobre la string base64, no los bytes).
-    let sig: { url: string; sha256: string } | null = null;
-    if (d.signatureDataUrl) {
-      const sigHash = d.signatureDataUrl.startsWith('data:')
-        ? await sha256OfDataUrl(d.signatureDataUrl)
-        : d.signatureSha256 ?? '';
-      sig = d.signatureDataUrl.startsWith('data:')
-        ? await uploadEvidence('signature', d.signatureDataUrl, sigHash)
-        : { url: d.signatureDataUrl, sha256: sigHash };
-    }
-
-    // 2) Subir foto si se capturó.
-    let photo: { url: string; sha256: string } | null = null;
-    if (d.photoDataUrl) {
-      const photoHash = d.photoDataUrl.startsWith('data:')
-        ? await sha256OfDataUrl(d.photoDataUrl)
-        : d.photoSha256 ?? '';
-      photo = d.photoDataUrl.startsWith('data:')
-        ? await uploadEvidence('photo', d.photoDataUrl, photoHash)
-        : { url: d.photoDataUrl, sha256: photoHash };
-    }
+    // 1+2) Subir firma y foto EN PARALELO (antes era secuencial firma→foto, que
+    // sumaba los tiempos). Y REUSAR el SHA-256 precomputado al capturar
+    // (delivery/[citizenId].tsx ya guarda signatureSha256/photoSha256): re-hashear
+    // ~300KB de base64 por captura bloqueaba el hilo JS único ~300-800ms cada uno
+    // → la app "se trababa" y el sync se hacía eterno. Solo se recalcula si el hash
+    // falta (auto-cura de capturas viejas). La idempotencia por SHA en backend queda igual.
+    const uploadSignature = async (): Promise<{ url: string; sha256: string } | null> => {
+      if (!d.signatureDataUrl) return null;
+      if (!d.signatureDataUrl.startsWith('data:')) {
+        return { url: d.signatureDataUrl, sha256: d.signatureSha256 ?? '' };
+      }
+      const hash = d.signatureSha256 ?? (await sha256OfDataUrl(d.signatureDataUrl));
+      return uploadEvidence('signature', d.signatureDataUrl, hash);
+    };
+    const uploadPhotoEvidence = async (): Promise<{ url: string; sha256: string } | null> => {
+      if (!d.photoDataUrl) return null;
+      if (!d.photoDataUrl.startsWith('data:')) {
+        return { url: d.photoDataUrl, sha256: d.photoSha256 ?? '' };
+      }
+      const hash = d.photoSha256 ?? (await sha256OfDataUrl(d.photoDataUrl));
+      return uploadEvidence('photo', d.photoDataUrl, hash);
+    };
+    const [sig, photo] = await Promise.all([uploadSignature(), uploadPhotoEvidence()]);
 
     // 3) Subir los archivos del formulario dinámico (foto/documento) y dejar
     //    solo las referencias en customFormData (no base64). Texto/GPS/etc.

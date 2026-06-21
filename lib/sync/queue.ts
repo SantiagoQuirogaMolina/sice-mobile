@@ -61,7 +61,11 @@ export type QueueEvent =
       ok: number;
       failed: number;
       blocked: number;
-    };
+    }
+  // Reintento automático: la UI muestra "Reintentando en Ns…" en vez de quedar
+  // muda (lo que hacía que el operador tocara "Sincronizar" a mano una y otra vez).
+  | { type: 'retry-scheduled'; inSeconds: number; pending: number }
+  | { type: 'retry-firing' };
 
 type Listener = (e: QueueEvent) => void;
 const listeners = new Set<Listener>();
@@ -124,15 +128,28 @@ let retryTimer: ReturnType<typeof setTimeout> | null = null;
 let autoRetryCount = 0;
 const AUTO_RETRY_DELAYS_MS = [6_000, 11_000, 21_000, 41_000, 81_000, 120_000];
 
-function scheduleAutoRetry(retryableFailed: number, ok: number): void {
+function scheduleAutoRetry(ok: number): void {
   if (ok > 0) autoRetryCount = 0; // hubo progreso → reiniciar la insistencia
-  if (retryableFailed <= 0) return; // nada reintentable (todo subió o quedó blocked)
+  // Mira la COLA REAL (no solo lo de esta corrida): cuenta items en 'error'
+  // (transitorios con backoff). Esto cubre el caso en que un re-disparo manual
+  // (pendingRetry) corrió cuando los items aún estaban en backoff y no procesó
+  // nada → antes la cadena se rompía y el operador tenía que tocar a mano.
+  const pending =
+    countDeliveriesByStatus('error') +
+    countPendingCitizensByStatus('error') +
+    countPendingEbsByStatus('error');
+  if (pending === 0) {
+    autoRetryCount = 0;
+    return; // nada en error → cola limpia
+  }
   if (autoRetryCount >= AUTO_RETRY_DELAYS_MS.length) return; // insistir de más no ayuda
   const delay = AUTO_RETRY_DELAYS_MS[autoRetryCount];
   autoRetryCount += 1;
   if (retryTimer) clearTimeout(retryTimer);
+  emit({ type: 'retry-scheduled', inSeconds: Math.round(delay / 1000), pending });
   retryTimer = setTimeout(() => {
     retryTimer = null;
+    emit({ type: 'retry-firing' });
     void processSyncQueue();
   }, delay);
 }
@@ -324,9 +341,9 @@ export async function processSyncQueue(): Promise<BatchTotals> {
       pendingRetry = false;
       void processSyncQueue();
     } else {
-      // Sin re-disparo manual: si quedaron items en 'error' (transitorios), la
-      // "segunda oleada" se reintenta SOLA en unos segundos.
-      scheduleAutoRetry(totals.retryable, totals.ok);
+      // Sin re-disparo manual: si quedan items en 'error' (transitorios), la
+      // "segunda oleada" se reintenta SOLA en unos segundos (con feedback visible).
+      scheduleAutoRetry(totals.ok);
     }
   }
 }

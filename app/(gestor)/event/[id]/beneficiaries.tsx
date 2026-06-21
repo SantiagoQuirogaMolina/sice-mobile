@@ -69,6 +69,7 @@ export default function BeneficiariesScreen() {
 
   const [loading, setLoading] = useState(true);
   const [loadedCount, setLoadedCount] = useState(0);
+  const [downloading, setDownloading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
 
   // Debounce de la búsqueda: re-consultar SQL por keystroke es barato, pero
@@ -80,13 +81,29 @@ export default function BeneficiariesScreen() {
 
   const loadFromBackend = async () => {
     if (!eventId) return;
+    setDownloading(true);
+    let firstPagePainted = false;
     try {
-      await beneficiariesService.listForEvent(eventId, (n) => setLoadedCount(n));
+      await beneficiariesService.listForEvent(eventId, (n) => {
+        setLoadedCount(n);
+        // Apenas la PRIMERA página se persiste, mostramos la lista (no esperamos
+        // las 20.000). Las siguientes crecen el cache en segundo plano.
+        if (!firstPagePainted) {
+          firstPagePainted = true;
+          setLoading(false);
+          reload();
+        }
+        refreshSectorsAndTotal(); // el total crece mientras descarga
+      });
     } catch {
       // Cache ya está disponible si la red falla
     }
+    setDownloading(false);
     setLoading(false);
     setRefreshing(false);
+    reload();
+    refreshCounts();
+    refreshSectorsAndTotal();
   };
 
   // Carga la PRIMERA página con los filtros actuales (offline, SQLite).
@@ -201,7 +218,13 @@ export default function BeneficiariesScreen() {
           <Text style={styles.backText}>← Atrás</Text>
         </Pressable>
         <Text style={styles.title}>Beneficiarios</Text>
-        <Text style={styles.subtitle}>Busca por documento o nombre</Text>
+        {downloading && loadedCount > 0 ? (
+          <Text style={[styles.subtitle, { color: colors.cyan }]}>
+            ⟳ Descargando lista completa… {loadedCount.toLocaleString('es-CO')}
+          </Text>
+        ) : (
+          <Text style={styles.subtitle}>Busca por documento o nombre</Text>
+        )}
       </View>
 
       {/* Search input */}

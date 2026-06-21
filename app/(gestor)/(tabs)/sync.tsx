@@ -78,6 +78,9 @@ export default function SyncTab() {
   const [progress, setProgress] = useState({ done: 0, total: 0 });
   const [elapsed, setElapsed] = useState(0);
   const [lastResult, setLastResult] = useState<string | null>(null);
+  // Reintento automático en curso: la UI muestra "Reintentando en Ns…" en vez de
+  // quedar muda (lo que hacía que el operador tocara "Sincronizar" a mano).
+  const [autoRetry, setAutoRetry] = useState<{ inSeconds: number; pending: number } | null>(null);
 
   const refresh = () => {
     setTotals(computeTotals());
@@ -89,6 +92,7 @@ export default function SyncTab() {
     const unsub = subscribeQueueEvents((e) => {
       if (e.type === 'batch-start') {
         setSyncing(true);
+        setAutoRetry(null);
         setProgress({ done: 0, total: e.total });
       } else if (e.type === 'item-done') {
         setProgress((p) => ({ ...p, done: p.done + 1 }));
@@ -99,10 +103,24 @@ export default function SyncTab() {
           `${e.ok} ok · ${e.failed} falló · ${e.blocked} bloqueada${e.blocked === 1 ? '' : 's'}`,
         );
         refresh();
+      } else if (e.type === 'retry-scheduled') {
+        // La cola reintentará sola: mostramos el countdown (no "Sincronizar" mudo).
+        setAutoRetry({ inSeconds: e.inSeconds, pending: e.pending });
+      } else if (e.type === 'retry-firing') {
+        setAutoRetry(null);
       }
     });
     return unsub;
   }, []);
+
+  // Countdown del reintento automático (1s).
+  useEffect(() => {
+    if (!autoRetry) return;
+    const t = setInterval(() => {
+      setAutoRetry((a) => (a && a.inSeconds > 0 ? { ...a, inSeconds: a.inSeconds - 1 } : a));
+    }, 1000);
+    return () => clearInterval(t);
+  }, [autoRetry === null]);
 
   // Cronómetro en vivo mientras sincroniza → permite estimar el tiempo restante.
   useEffect(() => {
@@ -231,6 +249,17 @@ export default function SyncTab() {
             <Text style={styles.progressText}>
               {progress.done} / {progress.total} · faltan {remaining}
               {etaLabel ? ` · ${etaLabel} restante` : ''}
+            </Text>
+          </View>
+        )}
+        {autoRetry && !syncing && (
+          <View style={styles.autoRetryWrap}>
+            <Text style={styles.autoRetryText}>
+              ↻ Reintentando solo en {autoRetry.inSeconds}s… ({autoRetry.pending} pendiente
+              {autoRetry.pending === 1 ? '' : 's'})
+            </Text>
+            <Text style={styles.autoRetryHint}>
+              No tienes que hacer nada — la app reintenta automáticamente.
             </Text>
           </View>
         )}
@@ -445,6 +474,27 @@ const styles = StyleSheet.create({
     fontSize: fontSizes.xs,
     textAlign: 'center',
     marginTop: spacing.md,
+  },
+  autoRetryWrap: {
+    marginTop: spacing.md,
+    backgroundColor: colors.cyanSoft,
+    borderRadius: radii.md,
+    padding: spacing.md,
+    borderLeftWidth: 3,
+    borderLeftColor: colors.cyan,
+  },
+  autoRetryText: {
+    color: colors.cyan,
+    fontSize: fontSizes.sm,
+    fontWeight: fontWeights.bold,
+    textAlign: 'center',
+    fontVariant: ['tabular-nums'],
+  },
+  autoRetryHint: {
+    color: colors.textSecondary,
+    fontSize: fontSizes.xs,
+    textAlign: 'center',
+    marginTop: 2,
   },
   foot: {
     color: colors.textMuted,
