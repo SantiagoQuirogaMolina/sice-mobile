@@ -10,7 +10,9 @@
 
 import { api, ApiError } from '../client';
 import {
+  getBeneficiariesSyncMarker,
   listBeneficiariesByEvent,
+  markBeneficiariesDownloaded,
   normalizeDocument,
   normalizeName,
   pruneBeneficiariesByEvent,
@@ -106,6 +108,10 @@ export const beneficiariesService = {
       if (keepCitizenIds.length > 0) {
         pruneBeneficiariesByEvent(eventId, keepCitizenIds);
       }
+      // Sellar la descarga como COMPLETA: solo se llega acá si el loop terminó sin
+      // error (una red caída a mitad cae al catch y NO marca → la próxima entrada
+      // reintenta). A partir de acá, el evento se usa offline sin re-descargar.
+      markBeneficiariesDownloaded(eventId, total);
       return listBeneficiariesByEvent(eventId);
     } catch (err) {
       if (err instanceof ApiError && err.code === 'NETWORK_ERROR') {
@@ -122,5 +128,19 @@ export const beneficiariesService = {
    */
   fromCache(eventId: string): CachedBeneficiary[] {
     return listBeneficiariesByEvent(eventId);
+  },
+
+  /**
+   * ¿Hay que descargar la lista? true solo si la descarga NUNCA se completó.
+   * Una vez completa, las siguientes entradas trabajan offline sin volver a
+   * descargar (el operador fuerza una actualización con pull-to-refresh).
+   */
+  needsDownload(eventId: string): boolean {
+    return getBeneficiariesSyncMarker(eventId).downloadedAt == null;
+  },
+
+  /** Marcador de la descarga (para mostrar "listo offline · N · fecha"). */
+  syncMarker(eventId: string): { downloadedAt: string | null; count: number | null } {
+    return getBeneficiariesSyncMarker(eventId);
   },
 };

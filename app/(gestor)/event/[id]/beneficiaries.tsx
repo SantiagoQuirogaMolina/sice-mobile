@@ -67,10 +67,20 @@ export default function BeneficiariesScreen() {
   const [sectors, setSectors] = useState<{ name: string; count: number }[]>([]);
   const [total, setTotal] = useState(0);
 
-  const [loading, setLoading] = useState(true);
+  // No mostrar la pantalla "Descargando" si ya hay lista cacheada → evita el
+  // flash en CADA entrada. Solo la primera entrada (cache vacío) la ve.
+  const [loading, setLoading] = useState(
+    () => !(eventId && countBeneficiaries(eventId, {}) > 0),
+  );
   const [loadedCount, setLoadedCount] = useState(0);
   const [downloading, setDownloading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  // Marcador de descarga: si downloadedAt != null, el evento está completo y se
+  // usa offline sin re-descargar. Alimenta el banner "disponible sin internet".
+  const [marker, setMarker] = useState<{ downloadedAt: string | null; count: number | null }>({
+    downloadedAt: null,
+    count: null,
+  });
 
   // Debounce de la búsqueda: re-consultar SQL por keystroke es barato, pero
   // ~250ms evita una consulta por tecla cuando el operador escribe rápido.
@@ -104,6 +114,7 @@ export default function BeneficiariesScreen() {
     reload();
     refreshCounts();
     refreshSectorsAndTotal();
+    refreshMarker();
   };
 
   // Carga la PRIMERA página con los filtros actuales (offline, SQLite).
@@ -153,16 +164,31 @@ export default function BeneficiariesScreen() {
     setTotal(countBeneficiaries(eventId, {}));
   }, [eventId]);
 
-  // Mount: traer del backend en segundo plano; mostrar el cache de inmediato.
+  const refreshMarker = useCallback(() => {
+    if (eventId) setMarker(beneficiariesService.syncMarker(eventId));
+  }, [eventId]);
+
+  // Mount: descargar SOLO la PRIMERA vez (o si una descarga previa quedó a
+  // medias). Si el evento ya está completo, se trabaja 100% offline sin volver a
+  // descargar — el operador fuerza una actualización con pull-to-refresh.
   useEffect(() => {
     if (!eventId) return;
     refreshSectorsAndTotal();
+    refreshMarker();
     if (countBeneficiaries(eventId, {}) > 0) setLoading(false);
-    void loadFromBackend().then(() => {
-      refreshSectorsAndTotal();
-      refreshCounts();
+    if (beneficiariesService.needsDownload(eventId)) {
+      void loadFromBackend().then(() => {
+        refreshSectorsAndTotal();
+        refreshCounts();
+        reload();
+        refreshMarker();
+      });
+    } else {
+      // Ya está completo offline → pintar cache, SIN red.
       reload();
-    });
+      refreshCounts();
+      setLoading(false);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [eventId]);
 
@@ -240,6 +266,27 @@ export default function BeneficiariesScreen() {
           clearButtonMode="while-editing"
         />
       </View>
+
+      {/* Estado de disponibilidad offline — el operador sabe si tiene la lista
+          completa para trabajar sin internet. No re-descarga al entrar; para
+          actualizar (si cambió en el servidor) desliza hacia abajo. */}
+      {!downloading &&
+        (marker.downloadedAt ? (
+          <View style={styles.offlineWrap}>
+            <Text style={styles.offlineOk} numberOfLines={2}>
+              ✓ Lista lista para usar sin internet ·{' '}
+              {(marker.count ?? total).toLocaleString('es-CO')} personas · actualizada{' '}
+              {formatMarkerDate(marker.downloadedAt)}
+            </Text>
+          </View>
+        ) : (
+          <View style={styles.offlineWrap}>
+            <Text style={styles.offlineWarn} numberOfLines={2}>
+              ⚠ Descarga incompleta — desliza hacia abajo para descargar la lista completa
+              y poder trabajar sin internet.
+            </Text>
+          </View>
+        ))}
 
       {/* Filtro por sector (solo si tengo más de uno) — dropdown 100% offline. */}
       {sectors.length > 1 && (
@@ -501,6 +548,16 @@ const BeneficiaryRow = memo(function BeneficiaryRow({
   );
 });
 
+function formatMarkerDate(iso: string): string {
+  const d = new Date(iso);
+  return d.toLocaleString('es-CO', {
+    day: '2-digit',
+    month: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
 function initials(name: string): string {
   const parts = name.trim().split(/\s+/).filter(Boolean);
   if (parts.length === 0) return '?';
@@ -536,6 +593,25 @@ const styles = StyleSheet.create({
   searchWrap: {
     paddingHorizontal: spacing.lg,
     paddingBottom: spacing.sm,
+  },
+  offlineWrap: {
+    marginHorizontal: spacing.lg,
+    marginBottom: spacing.sm,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.xs,
+    borderRadius: radii.sm,
+    backgroundColor: colors.bgInput,
+  },
+  offlineOk: {
+    color: colors.success,
+    fontSize: fontSizes.xs,
+    fontWeight: fontWeights.semibold,
+  },
+  offlineWarn: {
+    color: colors.warning,
+    fontSize: fontSizes.xs,
+    fontWeight: fontWeights.semibold,
+    lineHeight: 16,
   },
   searchInput: {
     height: TOUCH_MIN,

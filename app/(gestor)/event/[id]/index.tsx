@@ -70,7 +70,7 @@ export default function EventDetail() {
     setCounts(getEventCounts(id));
   };
 
-  const load = async () => {
+  const load = async (force = false) => {
     if (!id) return;
     try {
       // 1. Detalle del evento (offline-first)
@@ -92,17 +92,20 @@ export default function EventDetail() {
       refreshLocalCounts();
       if (getEventCounts(id).total > 0) setLoading(false);
 
-      // 3. Descargar/actualizar TODA la lista en segundo plano (con progreso).
-      try {
-        await beneficiariesService.listForEvent(id, (n) => setLoadedCount(n));
-        setBannerError(null);
-      } catch (e) {
-        setBannerError(
-          apiErrorMessage(
-            e,
-            'No se pudo actualizar la lista. Mostrando datos guardados.',
-          ),
-        );
+      // 3. Descargar la lista SOLO la PRIMERA vez (o forzado por pull-to-refresh).
+      //    Una vez completa, no se re-descarga al entrar → se trabaja 100% offline.
+      if (force || beneficiariesService.needsDownload(id)) {
+        try {
+          await beneficiariesService.listForEvent(id, (n) => setLoadedCount(n));
+          setBannerError(null);
+        } catch (e) {
+          setBannerError(
+            apiErrorMessage(
+              e,
+              'No se pudo actualizar la lista. Mostrando datos guardados.',
+            ),
+          );
+        }
       }
 
       // 4. Re-leer counts del SQLite (ahora completos)
@@ -224,7 +227,7 @@ export default function EventDetail() {
             refreshing={refreshing}
             onRefresh={() => {
               setRefreshing(true);
-              void load();
+              void load(true); // pull-to-refresh fuerza la actualización de la lista
             }}
             tintColor={colors.cyan}
             colors={[colors.cyan]}

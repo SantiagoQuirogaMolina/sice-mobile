@@ -255,6 +255,12 @@ function initSchema(db: SQLite.SQLiteDatabase): void {
   addColumnIfMissing(db, 'pending_deliveries', 'is_exception', 'INTEGER NOT NULL DEFAULT 0');
   addColumnIfMissing(db, 'pending_deliveries', 'exception_justification', 'TEXT');
 
+  // Marcador de "lista de beneficiarios descargada COMPLETA" por evento. Permite
+  // descargar UNA vez (primera entrada) y luego trabajar 100% offline sin volver a
+  // descargar en cada entrada. NULL = nunca se completó → la primera entrada descarga.
+  addColumnIfMissing(db, 'cached_events', 'beneficiaries_downloaded_at', 'TEXT');
+  addColumnIfMissing(db, 'cached_events', 'beneficiaries_count', 'INTEGER');
+
   // Sellar la versión del cache tras recrear/crear las tablas.
   if (cacheVer < CACHE_SCHEMA_VERSION) {
     db.execSync(`PRAGMA user_version = ${CACHE_SCHEMA_VERSION}`);
@@ -386,6 +392,16 @@ export function normalizeName(raw: string): string {
 
 export function saveCachedEvent(event: CachedEvent): void {
   const db = getDB();
+  // Preservar el marcador de descarga de beneficiarios: NO viene en CachedEvent
+  // (lo gestionan markBeneficiariesDownloaded/getBeneficiariesSyncMarker), así que
+  // sin esto el INSERT OR REPLACE lo pisaría con NULL en cada refresh del evento.
+  const prevMarker = db.getFirstSync<{
+    beneficiaries_downloaded_at: string | null;
+    beneficiaries_count: number | null;
+  }>(
+    `SELECT beneficiaries_downloaded_at, beneficiaries_count FROM cached_events WHERE id = ?`,
+    [event.id],
+  );
   db.runSync(
     `INSERT OR REPLACE INTO cached_events
        (id, tenant_id, name, type, status, description, start_date, end_date,
@@ -393,8 +409,9 @@ export function saveCachedEvent(event: CachedEvent): void {
         require_signature, require_photo, require_gps, capture_domicilio,
         total_beneficiaries, total_delivered, allow_operator_instances,
         series_id, series_position, series_count, sectors_json,
-        custom_form_fields_json, last_sync_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        custom_form_fields_json, last_sync_at,
+        beneficiaries_downloaded_at, beneficiaries_count)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       event.id,
       event.tenantId,
@@ -421,8 +438,47 @@ export function saveCachedEvent(event: CachedEvent): void {
       event.sectorsJson,
       event.customFormFieldsJson,
       event.lastSyncAt,
+      prevMarker?.beneficiaries_downloaded_at ?? null,
+      prevMarker?.beneficiaries_count ?? null,
     ],
   );
+}
+
+/**
+ * Marca que la lista COMPLETA de beneficiarios del evento ya se descargó (con
+ * cuántos y cuándo). Se llama solo al terminar la descarga sin error. A partir de
+ * acá, las siguientes entradas leen del cache sin volver a descargar.
+ *
+ * REQUISITO: la fila del evento DEBE existir en cached_events antes (el flujo la
+ * cachea vía eventsService.getById / la lista de eventos). Si no existiera, el
+ * UPDATE no afecta filas y el marcador queda NULL → la próxima entrada re-descarga
+ * (degradación elegante, sin pérdida de datos).
+ */
+export function markBeneficiariesDownloaded(eventId: string, count: number): void {
+  getDB().runSync(
+    `UPDATE cached_events
+        SET beneficiaries_downloaded_at = ?, beneficiaries_count = ?
+      WHERE id = ?`,
+    [new Date().toISOString(), count, eventId],
+  );
+}
+
+/** Lee el marcador de descarga de beneficiarios del evento (null = nunca completó). */
+export function getBeneficiariesSyncMarker(eventId: string): {
+  downloadedAt: string | null;
+  count: number | null;
+} {
+  const row = getDB().getFirstSync<{
+    beneficiaries_downloaded_at: string | null;
+    beneficiaries_count: number | null;
+  }>(
+    `SELECT beneficiaries_downloaded_at, beneficiaries_count FROM cached_events WHERE id = ?`,
+    [eventId],
+  );
+  return {
+    downloadedAt: row?.beneficiaries_downloaded_at ?? null,
+    count: row?.beneficiaries_count ?? null,
+  };
 }
 
 export function getCachedEvent(id: string): CachedEvent | null {
