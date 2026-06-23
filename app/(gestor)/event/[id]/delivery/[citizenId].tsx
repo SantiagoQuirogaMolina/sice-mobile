@@ -31,6 +31,7 @@ import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as Location from 'expo-location';
 import SignatureScreen from 'react-native-signature-canvas';
 import { compressEvidencePhoto } from '../../../../../lib/media/image';
+import { formatCustomFormValue } from '../../../../../lib/format/custom-form-value';
 import { Screen } from '../../../../../components/Screen';
 import { Button } from '../../../../../components/Button';
 import { DynamicFormStep } from '../../../../../components/DynamicFormStep';
@@ -446,6 +447,7 @@ export default function DeliveryWizardScreen() {
           <ConfirmStep
             beneficiary={beneficiary}
             draft={draft}
+            customFormFields={customFormFields}
             requireGps={flags.requireGps}
             submitting={submitting}
             onBack={() => goFrom('confirm', -1)}
@@ -1004,6 +1006,7 @@ function GpsStep({
 function ConfirmStep({
   beneficiary,
   draft,
+  customFormFields,
   requireGps,
   submitting,
   onBack,
@@ -1011,11 +1014,22 @@ function ConfirmStep({
 }: {
   beneficiary: CachedBeneficiary;
   draft: DeliveryDraft;
+  customFormFields: GestorFormField[];
   requireGps: boolean;
   submitting: boolean;
   onBack: () => void;
   onSubmit: () => void;
 }) {
+  // Identidad ya se muestra arriba (beneficiario) → no repetirla en el bloque.
+  const IDENTITY = new Set(['doc_type', 'doc_number', 'full_name']);
+  const formRows = Object.entries(draft.customFormData)
+    .filter(([name]) => !IDENTITY.has(name))
+    .map(([name, value]) => ({
+      name,
+      label: customFormFields.find((f) => f.name === name)?.label ?? name,
+      text: formatCustomFormValue(value),
+    }))
+    .filter((r) => r.text !== '');
   return (
     <ScrollView contentContainerStyle={styles.stepBody}>
       <Text style={styles.h1}>Confirmar entrega</Text>
@@ -1084,6 +1098,22 @@ function ConfirmStep({
               ? `Precisión ±${Math.round(draft.gpsAccuracy)}m`
               : 'Precisión desconocida'}
           </Text>
+        )}
+
+        {/* Datos del formulario dinámico: el gestor los revisa antes de
+            registrar (la entrega es inmutable). Fecha → dd/mm/aaaa, archivo →
+            nombre, etc. (formatCustomFormValue, nunca [object Object]). */}
+        {formRows.length > 0 && (
+          <>
+            <View style={styles.divider} />
+            <Text style={styles.confirmLabel}>Datos del formulario</Text>
+            {formRows.map((r) => (
+              <View key={r.name} style={styles.confirmFormRow}>
+                <Text style={styles.confirmFormLabel}>{r.label}</Text>
+                <Text style={styles.confirmFormValue}>{r.text}</Text>
+              </View>
+            ))}
+          </>
         )}
       </View>
 
@@ -1494,6 +1524,25 @@ const styles = StyleSheet.create({
     color: colors.textMuted,
     fontSize: fontSizes.sm,
     fontVariant: ['tabular-nums'],
+  },
+  confirmFormRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    gap: spacing.md,
+    paddingVertical: spacing.xs,
+  },
+  confirmFormLabel: {
+    flex: 1,
+    color: colors.textMuted,
+    fontSize: fontSizes.sm,
+  },
+  confirmFormValue: {
+    flex: 1,
+    color: colors.textPrimary,
+    fontSize: fontSizes.sm,
+    fontWeight: fontWeights.semibold,
+    textAlign: 'right',
   },
   confirmSig: {
     height: 100,
