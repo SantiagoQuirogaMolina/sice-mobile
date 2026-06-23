@@ -2,7 +2,7 @@
   "expo": {
     "name": "SICE Operador",
     "slug": "sice-operador",
-    "version": "1.28.0",
+    "version": "1.29.0",
     "orientation": "portrait",
     "userInterfaceStyle": "dark",
     "scheme": "sice",
@@ -13,7 +13,7 @@
     "owner": "santiquirogamolina",
     "android": {
       "package": "com.sice.operador",
-      "versionCode": 36,
+      "versionCode": 37,
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "monochromeImage": "./assets/icon-mono.png",

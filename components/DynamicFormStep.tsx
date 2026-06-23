@@ -40,6 +40,7 @@ import * as Location from 'expo-location';
 import { Button } from './Button';
 import { Input } from './Input';
 import { sha256OfDataUrl } from '../lib/crypto/hash';
+import { compressEvidencePhoto } from '../lib/media/image';
 import type { GestorFormField } from '../lib/api/services/events.service';
 import {
   colors,
@@ -584,14 +585,19 @@ function CameraCapture({
     setError(null);
     try {
       const pic = await cameraRef.current.takePictureAsync({
-        quality: 0.6,
-        base64: true,
+        quality: 1, // se recomprime una vez al redimensionar
+        base64: false,
         skipProcessing: false,
       });
-      if (pic?.base64) {
-        const dataUrl = `data:image/jpeg;base64,${pic.base64}`;
-        const sizeKB = Math.round((pic.base64.length * 3) / 4 / 1024);
-        setPreview({ dataUrl, sizeKB });
+      if (pic?.uri) {
+        // Redimensionar + comprimir (≈5× más liviano) para que la subida no se
+        // corte por red móvil. El SHA-256 se calcula luego sobre este resultado.
+        const result = await compressEvidencePhoto(pic.uri, pic.width, pic.height);
+        if (result) {
+          setPreview(result);
+        } else {
+          setError('No se procesó la imagen. Intenta de nuevo.');
+        }
       } else {
         setError('No se capturó la imagen. Intenta de nuevo.');
       }

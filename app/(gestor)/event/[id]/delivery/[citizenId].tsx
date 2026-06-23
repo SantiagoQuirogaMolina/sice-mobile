@@ -30,6 +30,7 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as Location from 'expo-location';
 import SignatureScreen from 'react-native-signature-canvas';
+import { compressEvidencePhoto } from '../../../../../lib/media/image';
 import { Screen } from '../../../../../components/Screen';
 import { Button } from '../../../../../components/Button';
 import { DynamicFormStep } from '../../../../../components/DynamicFormStep';
@@ -775,16 +776,22 @@ function PhotoStep({
     setPhotoError(null);
     try {
       const pic = await cameraRef.current.takePictureAsync({
-        quality: 0.6,
-        base64: true,
+        quality: 1, // sin doble compresión: se recomprime una vez al redimensionar
+        base64: false,
         skipProcessing: false,
       });
-      // #3: la cámara puede devolver sin base64 (foto cancelada / buffer
-      // vacío) sin lanzar — lo tratamos como error recuperable, no en silencio.
-      if (pic?.base64) {
-        const dataUrl = `data:image/jpeg;base64,${pic.base64}`;
-        const sizeKB = Math.round((pic.base64.length * 3) / 4 / 1024);
-        setPreview({ dataUrl, sizeKB });
+      // #3: la cámara puede devolver sin uri (foto cancelada / buffer vacío) sin
+      // lanzar — lo tratamos como error recuperable, no en silencio.
+      if (pic?.uri) {
+        // Redimensionar + comprimir antes de guardar: la foto cruda pesa ~1.6MB+
+        // y tumbaba las subidas por red móvil. El SHA-256 se calcula luego sobre
+        // ESTE resultado (cadena de integridad intacta).
+        const result = await compressEvidencePhoto(pic.uri, pic.width, pic.height);
+        if (result) {
+          setPreview(result);
+        } else {
+          setPhotoError('No se procesó la imagen. Intenta de nuevo.');
+        }
       } else {
         setPhotoError('No se capturó la imagen. Intenta de nuevo.');
       }
