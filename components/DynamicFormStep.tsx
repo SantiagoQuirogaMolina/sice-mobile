@@ -59,6 +59,24 @@ import {
 /** Campos de identidad fijos: ya capturados con la cédula → solo-lectura. */
 const IDENTITY_FIELD_NAMES = new Set(['doc_type', 'doc_number', 'full_name']);
 
+/** Tope de peso del documento. El backend rechaza evidencia >8MB en base64
+ *  (~6MB binarios) con 400 y la entrega queda bloqueada. Capamos a 5MB binarios
+ *  (~6.7MB base64) para quedar holgados y mantener los archivos livianos. */
+const MAX_FILE_BYTES = 5 * 1024 * 1024;
+/** Tipos de documento permitidos (seguros): PDF, Word, Excel + imágenes. */
+const SAFE_DOC_MIMES = [
+  'application/pdf',
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.ms-excel',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+];
+/** Lo que se le ofrece al selector (incluye comodín de imágenes). */
+const PICKER_DOC_TYPES = [...SAFE_DOC_MIMES, 'image/*'];
+function isSafeFileMime(mime: string): boolean {
+  return SAFE_DOC_MIMES.includes(mime) || mime.startsWith('image/');
+}
+
 /** Valor capturado de un campo foto/documento. */
 interface CapturedFile {
   kind: 'photo' | 'file';
@@ -132,7 +150,7 @@ export function DynamicFormStep({
     try {
       const accept = field.accept
         ? field.accept.split(',').map((s) => s.trim()).filter(Boolean)
-        : ['application/pdf', 'image/*'];
+        : PICKER_DOC_TYPES;
       const res = await DocumentPicker.getDocumentAsync({
         type: accept,
         copyToCacheDirectory: true,
@@ -140,6 +158,24 @@ export function DynamicFormStep({
       });
       if (res.canceled || !res.assets?.[0]) return;
       const asset = res.assets[0];
+      // Validar ANTES de leer el base64 (un archivo gigante revienta memoria y
+      // el servidor lo rechaza con 400 → la entrega quedaba bloqueada). Tope de
+      // peso + tipos seguros (PDF/Word/Excel/imagen).
+      const mimeGuess = asset.mimeType ?? '';
+      if (mimeGuess && !isSafeFileMime(mimeGuess)) {
+        Alert.alert(
+          'Tipo de archivo no permitido',
+          'Solo se aceptan PDF, Word, Excel o imágenes. Elige otro archivo o toma una foto del documento.',
+        );
+        return;
+      }
+      if ((asset.size ?? 0) > MAX_FILE_BYTES) {
+        Alert.alert(
+          'Archivo muy pesado',
+          `El archivo pesa ${((asset.size ?? 0) / 1048576).toFixed(1)} MB y el máximo es ${MAX_FILE_BYTES / 1048576} MB. Elige uno más liviano o toma una foto del documento.`,
+        );
+        return;
+      }
       // Leer el archivo como base64 (API File de expo-file-system v19). El SHA-256
       // se calcula sobre ese contenido → misma cadena de integridad que las fotos.
       const base64 = await new File(asset.uri).base64();

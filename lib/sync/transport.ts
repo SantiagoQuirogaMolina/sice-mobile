@@ -44,7 +44,7 @@ interface BackendEventBeneficiaryResponse {
 }
 
 async function uploadEvidence(
-  kind: 'signature' | 'photo' | 'audio' | 'selfie',
+  kind: 'signature' | 'photo' | 'audio' | 'selfie' | 'document',
   dataUrl: string,
   sha256: string,
 ): Promise<{ url: string; sha256: string }> {
@@ -93,8 +93,11 @@ async function uploadCustomFormFiles(
         piece.sha256
       ) {
         touched = true;
-        // 'photo' es cosmético en el storage; la extensión sale del mime.
-        const res = await uploadEvidence('photo', piece.dataUrl, piece.sha256);
+        // El backend valida el MIME segun el kind: 'photo' solo acepta imagenes.
+        // Un campo 'file' (PDF/Word/Excel) DEBE subirse como 'document' o el
+        // backend lo rechaza con 400 y la entrega queda bloqueada para siempre.
+        const evidenceKind = piece.kind === 'file' ? 'document' : 'photo';
+        const res = await uploadEvidence(evidenceKind, piece.dataUrl, piece.sha256);
         processed.push({
           kind: piece.kind,
           url: res.url,
