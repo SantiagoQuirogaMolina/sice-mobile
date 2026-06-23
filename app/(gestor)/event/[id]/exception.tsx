@@ -202,7 +202,7 @@ export default function ExceptionForm() {
 
   const onSubmit = () => {
     if (!user?.tenantId) {
-      setError('Tu sesión no tiene tenant. Cierra sesión e ingresa de nuevo.');
+      setError('Tu sesión expiró. Cerrá sesión e ingresá de nuevo.');
       return;
     }
     if (!formValid) return;

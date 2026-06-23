@@ -212,7 +212,7 @@ export default function SyncTab() {
               ? `${totals.citizensPending + totals.ebsPending} pasos pendientes para registrar al ciudadano y vincularlo al evento.\n`
               : ''}
             {totals.citizensBlocked + totals.ebsBlocked > 0
-              ? `${totals.citizensBlocked + totals.ebsBlocked} bloqueadas — el backend rechazó el alta o el vínculo. Entrá al evento para ver detalle.`
+              ? `${totals.citizensBlocked + totals.ebsBlocked} bloqueadas — el servidor rechazó el registro o el vínculo. Entrá al evento para ver el detalle.`
               : ''}
           </Text>
         </View>
