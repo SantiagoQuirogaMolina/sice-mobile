@@ -28,7 +28,9 @@
 import { useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   Image,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -37,6 +39,9 @@ import {
 } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as Location from 'expo-location';
+import DateTimePicker from '@react-native-community/datetimepicker';
+import * as DocumentPicker from 'expo-document-picker';
+import { File } from 'expo-file-system';
 import { Button } from './Button';
 import { Input } from './Input';
 import { sha256OfDataUrl } from '../lib/crypto/hash';
@@ -121,6 +126,42 @@ export function DynamicFormStep({
     setErrors((e) => ({ ...e, [name]: '' }));
   };
 
+  // Campo 'file' (documento): selector de archivo del teléfono (PDF/imagen),
+  // alternativa a tomar foto. La web usa <input type=file>; igualamos eso.
+  const pickFile = async (field: GestorFormField) => {
+    try {
+      const accept = field.accept
+        ? field.accept.split(',').map((s) => s.trim()).filter(Boolean)
+        : ['application/pdf', 'image/*'];
+      const res = await DocumentPicker.getDocumentAsync({
+        type: accept,
+        copyToCacheDirectory: true,
+        multiple: false,
+      });
+      if (res.canceled || !res.assets?.[0]) return;
+      const asset = res.assets[0];
+      // Leer el archivo como base64 (API File de expo-file-system v19). El SHA-256
+      // se calcula sobre ese contenido → misma cadena de integridad que las fotos.
+      const base64 = await new File(asset.uri).base64();
+      const mime = asset.mimeType ?? 'application/octet-stream';
+      const dataUrl = `data:${mime};base64,${base64}`;
+      const sha256 = await sha256OfDataUrl(dataUrl);
+      const captured: CapturedFile = {
+        kind: 'file',
+        dataUrl,
+        sha256,
+        filename: asset.name ?? 'archivo',
+        mime,
+      };
+      update(field.name, captured);
+    } catch (e) {
+      Alert.alert(
+        'No se pudo leer el archivo',
+        e instanceof Error ? e.message : 'Intenta de nuevo o toma una foto del documento.',
+      );
+    }
+  };
+
   const validate = (): boolean => {
     const errs: Record<string, string> = {};
     for (const f of fields) {
@@ -182,6 +223,7 @@ export function DynamicFormStep({
             error={errors[f.name]}
             onChange={(v) => update(f.name, v)}
             onCapture={() => setCapturingField(f)}
+            onPickFile={() => void pickFile(f)}
           />
         ))}
       </View>
@@ -204,12 +246,14 @@ function FieldRow({
   error,
   onChange,
   onCapture,
+  onPickFile,
 }: {
   field: GestorFormField;
   value: unknown;
   error?: string;
   onChange: (v: unknown) => void;
   onCapture: () => void;
+  onPickFile: () => void;
 }) {
   const isIdentity = IDENTITY_FIELD_NAMES.has(field.name);
 
@@ -228,33 +272,59 @@ function FieldRow({
     );
   }
 
+  // select/radio sin opciones configuradas → degradar a un input de texto para no
+  // dejar un control muerto que impida completar (el backend no valida options).
+  const selectNoOptions =
+    (field.type === 'select' || field.type === 'radio') &&
+    (field.options?.length ?? 0) === 0;
+
+  // Inputs de texto (Input ya pinta su propio label + error).
+  if (
+    field.type === 'text' ||
+    field.type === 'textarea' ||
+    field.type === 'number' ||
+    field.type === 'phone' ||
+    selectNoOptions
+  ) {
+    return (
+      <View style={styles.field}>
+        <TextField field={field} value={value} error={error} onChange={onChange} />
+      </View>
+    );
+  }
+
+  // Fecha → date picker nativo.
+  if (field.type === 'date') {
+    return (
+      <View style={styles.field}>
+        <DateField field={field} value={value} error={error} onChange={onChange} />
+      </View>
+    );
+  }
+
+  // Resto de controles: usan FieldLabel + helper/error abajo.
   return (
     <View style={styles.field}>
-      {/* Input ya renderiza su propio label; los demás controles usan FieldLabel. */}
-      {field.type === 'text' ||
-      field.type === 'textarea' ||
-      field.type === 'number' ||
-      field.type === 'phone' ||
-      field.type === 'date' ? (
-        <TextField field={field} value={value} error={error} onChange={onChange} />
-      ) : (
-        <>
-          <FieldLabel field={field} />
-          {field.type === 'select' || field.type === 'radio' ? (
-            <ChipField field={field} value={value} onChange={onChange} />
-          ) : field.type === 'checkbox' ? (
-            <CheckboxField field={field} value={value} onChange={onChange} />
-          ) : field.type === 'photo' || field.type === 'file' ? (
-            <FileField field={field} value={value} onCapture={onCapture} onChange={onChange} />
-          ) : field.type === 'gps' ? (
-            <GpsField value={value} onChange={onChange} />
-          ) : null}
-          {field.helper && !error ? (
-            <Text style={styles.helper}>{field.helper}</Text>
-          ) : null}
-          {error ? <Text style={styles.error}>{error}</Text> : null}
-        </>
-      )}
+      <FieldLabel field={field} />
+      {field.type === 'select' || field.type === 'radio' ? (
+        <ChipField field={field} value={value} onChange={onChange} />
+      ) : field.type === 'checkbox' ? (
+        <CheckboxField field={field} value={value} onChange={onChange} />
+      ) : field.type === 'photo' || field.type === 'file' ? (
+        <FileField
+          field={field}
+          value={value}
+          onCapture={onCapture}
+          onPickFile={onPickFile}
+          onChange={onChange}
+        />
+      ) : field.type === 'gps' ? (
+        <GpsField value={value} onChange={onChange} />
+      ) : null}
+      {field.helper && !error ? (
+        <Text style={styles.helper}>{field.helper}</Text>
+      ) : null}
+      {error ? <Text style={styles.error}>{error}</Text> : null}
     </View>
   );
 }
@@ -313,6 +383,71 @@ function TextField({
       autoCapitalize={field.type === 'textarea' ? 'sentences' : 'none'}
       autoCorrect={field.type === 'textarea'}
     />
+  );
+}
+
+/* ─────────────────────────── Date (date picker nativo) ───────────────────────────
+ *
+ * Antes era un texto libre 'dd/mm/aaaa' sin validación (se podía escribir
+ * cualquier cosa y nadie lo detectaba — el backend tampoco valida). Ahora usa el
+ * date picker nativo y guarda SIEMPRE en ISO 'YYYY-MM-DD' (igual que la web con
+ * <input type=date>), mostrando 'dd/mm/aaaa' al usuario.
+ */
+function pad2(n: number): string {
+  return n < 10 ? `0${n}` : String(n);
+}
+/** Date → 'YYYY-MM-DD' con partes LOCALES (evita el off-by-one de toISOString). */
+function toIsoDate(d: Date): string {
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+}
+/** 'YYYY-MM-DD' → 'dd/mm/aaaa' para mostrar. */
+function isoToDisplay(iso: string): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso);
+  return m ? `${m[3]}/${m[2]}/${m[1]}` : iso;
+}
+
+function DateField({
+  field,
+  value,
+  error,
+  onChange,
+}: {
+  field: GestorFormField;
+  value: unknown;
+  error?: string;
+  onChange: (v: unknown) => void;
+}) {
+  const [show, setShow] = useState(false);
+  const iso = typeof value === 'string' ? value : '';
+  const display = iso ? isoToDisplay(iso) : '';
+  const current = iso ? new Date(`${iso}T00:00:00`) : new Date();
+  return (
+    <>
+      <FieldLabel field={field} />
+      <Pressable
+        onPress={() => setShow(true)}
+        style={({ pressed }) => [styles.dateButton, pressed && { opacity: 0.85 }]}
+      >
+        <Text style={display ? styles.dateValue : styles.datePlaceholder}>
+          {display || 'Seleccionar fecha (dd/mm/aaaa)'}
+        </Text>
+        <Text style={styles.dateIcon}>📅</Text>
+      </Pressable>
+      {field.helper && !error ? <Text style={styles.helper}>{field.helper}</Text> : null}
+      {error ? <Text style={styles.error}>{error}</Text> : null}
+      {show && (
+        <DateTimePicker
+          value={current}
+          mode="date"
+          display="default"
+          onChange={(event, selected) => {
+            // En Android el diálogo se cierra solo; cerramos el flag igual.
+            if (Platform.OS !== 'ios') setShow(false);
+            if (event.type === 'set' && selected) onChange(toIsoDate(selected));
+          }}
+        />
+      )}
+    </>
   );
 }
 
@@ -400,11 +535,13 @@ function FileField({
   field,
   value,
   onCapture,
+  onPickFile,
   onChange,
 }: {
   field: GestorFormField;
   value: unknown;
   onCapture: () => void;
+  onPickFile: () => void;
   onChange: (v: unknown) => void;
 }) {
   const items = asFileList(value);
@@ -442,19 +579,22 @@ function FileField({
           ))}
         </View>
       )}
-      {(multiple || items.length === 0) && (
-        <Button
-          label={
-            isPhoto
-              ? items.length > 0 && multiple
-                ? '📸 Agregar otra foto'
-                : '📸 Tomar foto'
-              : '📄 Capturar documento'
-          }
-          variant="secondary"
-          onPress={onCapture}
-        />
-      )}
+      {(multiple || items.length === 0) &&
+        (isPhoto ? (
+          <Button
+            label={
+              items.length > 0 && multiple ? '📸 Agregar otra foto' : '📸 Tomar foto'
+            }
+            variant="secondary"
+            onPress={onCapture}
+          />
+        ) : (
+          // Documento: elegir un archivo del teléfono (PDF/imagen) o tomar foto.
+          <View style={styles.fileButtons}>
+            <Button label="📎 Elegir archivo" variant="secondary" onPress={onPickFile} />
+            <Button label="📷 Tomar foto" variant="ghost" onPress={onCapture} />
+          </View>
+        ))}
     </View>
   );
 }
@@ -842,6 +982,32 @@ const styles = StyleSheet.create({
   },
   fileWrap: {
     gap: spacing.sm,
+  },
+  fileButtons: {
+    gap: spacing.sm,
+  },
+  dateButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    height: TOUCH_MIN,
+    paddingHorizontal: spacing.md,
+    borderRadius: radii.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.bgInput,
+  },
+  dateValue: {
+    color: colors.textPrimary,
+    fontSize: fontSizes.md,
+    fontVariant: ['tabular-nums'],
+  },
+  datePlaceholder: {
+    color: colors.textMuted,
+    fontSize: fontSizes.md,
+  },
+  dateIcon: {
+    fontSize: fontSizes.md,
   },
   fileThumbs: {
     flexDirection: 'row',
