@@ -26,11 +26,17 @@ export async function compressEvidencePhoto(
   height: number,
 ): Promise<{ dataUrl: string; sizeKB: number } | null> {
   const longEdge = Math.max(width || 0, height || 0);
-  // Solo se redimensiona si el lado largo supera el tope (nunca se hace upscaling).
+  // - lado largo > tope → redimensionar capeando el lado largo (según orientación).
+  // - dimensiones desconocidas (cámara OEM rara devuelve 0/undefined) → cap defensivo
+  //   por ancho: una foto de cámara SIEMPRE es >1600px, así que solo reduce (no upscale)
+  //   y garantiza el techo de tamaño en vez de subir el archivo pesado.
+  // - lado largo ya ≤ tope → no redimensionar (solo recomprimir).
   const actions =
     longEdge > MAX_LONG_EDGE
       ? [{ resize: width >= height ? { width: MAX_LONG_EDGE } : { height: MAX_LONG_EDGE } }]
-      : [];
+      : longEdge === 0
+        ? [{ resize: { width: MAX_LONG_EDGE } }]
+        : [];
   const out = await manipulateAsync(uri, actions, {
     compress: JPEG_QUALITY,
     format: SaveFormat.JPEG,
