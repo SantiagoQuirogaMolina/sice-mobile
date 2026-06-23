@@ -125,9 +125,8 @@ export default function DeliveryWizardScreen() {
     requirePhoto: true,
     requireGps: true,
   });
-  // Tipo de evento + campos del formulario dinámico (Tipo B). El paso 'data'
-  // solo aparece cuando el evento es B y tiene campos configurados.
-  const [eventType, setEventType] = useState<'A' | 'B'>('A');
+  // Campos extra del formulario del evento (sirve para Tipo A y Tipo B). El paso
+  // 'data' aparece cuando hay al menos un campo configurado.
   const [customFormFields, setCustomFormFields] = useState<GestorFormField[]>(
     [],
   );
@@ -142,7 +141,6 @@ export default function DeliveryWizardScreen() {
         requirePhoto: ev.requirePhoto,
         requireGps: ev.requireGps,
       });
-      setEventType(ev.type);
     }
     const b = findBeneficiaryByCitizen(eventId, citizenId);
     setBeneficiary(b);
@@ -164,7 +162,6 @@ export default function DeliveryWizardScreen() {
     let alive = true;
     void eventsService.getById(eventId).then((ev) => {
       if (alive && ev) {
-        setEventType(ev.type);
         setCustomFormFields(ev.customFormFields);
       }
     });
@@ -179,17 +176,16 @@ export default function DeliveryWizardScreen() {
   const navSteps = useMemo<Step[]>(
     () => [
       'verify',
-      // Paso 'data' (formulario dinámico) solo en Tipo B con campos definidos:
-      // así el operador captura lo mismo que pide el auto-registro QR.
-      ...(eventType === 'B' && customFormFields.length > 0
-        ? (['data'] as Step[])
-        : []),
+      // Paso 'data' (formulario dinámico): aparece SIEMPRE que el evento tenga
+      // campos extra configurados, sea Tipo A o B. Antes estaba limitado a Tipo B
+      // → en un Tipo A con campos extra el operador NO los veía (bug reportado).
+      ...(customFormFields.length > 0 ? (['data'] as Step[]) : []),
       ...(flags.requireSignature ? (['signature'] as Step[]) : []),
       ...(flags.requirePhoto ? (['photo'] as Step[]) : []),
       ...(flags.requireGps ? (['gps'] as Step[]) : []),
       'confirm',
     ],
-    [flags, eventType, customFormFields],
+    [flags, customFormFields],
   );
 
   const goFrom = (current: Step, dir: 1 | -1): void => {
