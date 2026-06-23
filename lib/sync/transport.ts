@@ -61,6 +61,34 @@ async function uploadEvidence(
   return { url: res.url, sha256: res.sha256 };
 }
 
+/** Tope por archivo del formulario, en BYTES reales (no caracteres base64), para
+ *  coincidir con el límite de captura y con el mensaje al operador ("máx 5 MB").
+ *  Atrapa datos legacy / que no pasaron por la validación de captura ANTES de
+ *  gastar un POST que el servidor rechazaría. */
+const MAX_FILE_BYTES = 5 * 1024 * 1024;
+
+/** Concurrencia interna de archivos por entrega. Acotada para no saturar la red
+ *  ni la memoria (el drain ya corre hasta 4 entregas a la vez). */
+const FORM_FILE_CONCURRENCY = 3;
+
+/** Ejecuta `fn` sobre `items` con un pool de a lo sumo `limit` en paralelo.
+ *  Local a transport.ts para no crear dependencia circular con queue.ts. Si
+ *  algún `fn` lanza, Promise.all propaga el error (uploadDelivery lo clasifica). */
+async function mapLimit<T>(
+  items: T[],
+  limit: number,
+  fn: (item: T) => Promise<void>,
+): Promise<void> {
+  let cursor = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (cursor < items.length) {
+      const i = cursor++;
+      await fn(items[i]);
+    }
+  });
+  await Promise.all(workers);
+}
+
 /**
  * Sube los archivos del formulario dinámico (campos foto/documento que el
  * operador capturó como Data URL dentro de customFormData) y los reemplaza por
@@ -68,17 +96,36 @@ async function uploadEvidence(
  * `uploadCustomFormFiles` de la web (lib/sync/real-transport.ts). Idempotente
  * por SHA-256. Texto/select/checkbox/GPS quedan intactos, así el POST a
  * /deliveries no lleva base64 gigante y los archivos van a EvidenceStorage.
+ *
+ * Sube los archivos EN PARALELO (pool acotado): antes era un doble bucle
+ * secuencial, así 2-3 documentos de una misma entrega subían uno tras otro.
  */
 async function uploadCustomFormFiles(
   customFormData: Record<string, unknown> | null | undefined,
 ): Promise<Record<string, unknown> | null | undefined> {
   if (!customFormData) return customFormData;
-  const out: Record<string, unknown> = { ...customFormData };
+
+  // Materializamos los items por campo (copia mutable) y recolectamos los
+  // archivos a subir como "jobs" con su ubicación (campo + índice), para
+  // subirlos en paralelo y luego reconstruir el objeto en su sitio.
+  const fieldItems: Record<string, unknown[]> = {};
+  const isArrayField: Record<string, boolean> = {};
+  type Job = {
+    key: string;
+    idx: number;
+    dataUrl: string;
+    sha256: string;
+    kind: 'photo' | 'file';
+    filename?: string;
+    mime?: string;
+  };
+  const jobs: Job[] = [];
   for (const [key, val] of Object.entries(customFormData)) {
-    const items = Array.isArray(val) ? val : [val];
-    let touched = false;
-    const processed: unknown[] = [];
-    for (const item of items) {
+    const arr = Array.isArray(val);
+    const items = arr ? [...(val as unknown[])] : [val];
+    fieldItems[key] = items;
+    isArrayField[key] = arr;
+    items.forEach((item, idx) => {
       const piece = item as {
         kind?: string;
         dataUrl?: string;
@@ -92,24 +139,45 @@ async function uploadCustomFormFiles(
         piece.dataUrl.startsWith('data:') &&
         piece.sha256
       ) {
-        touched = true;
-        // El backend valida el MIME segun el kind: 'photo' solo acepta imagenes.
-        // Un campo 'file' (PDF/Word/Excel) DEBE subirse como 'document' o el
-        // backend lo rechaza con 400 y la entrega queda bloqueada para siempre.
-        const evidenceKind = piece.kind === 'file' ? 'document' : 'photo';
-        const res = await uploadEvidence(evidenceKind, piece.dataUrl, piece.sha256);
-        processed.push({
+        jobs.push({
+          key,
+          idx,
+          dataUrl: piece.dataUrl,
+          sha256: piece.sha256,
           kind: piece.kind,
-          url: res.url,
-          sha256: res.sha256,
-          filename: piece.filename ?? 'archivo',
-          mime: piece.mime ?? 'application/octet-stream',
+          filename: piece.filename,
+          mime: piece.mime,
         });
-      } else {
-        processed.push(item);
       }
+    });
+  }
+  if (jobs.length === 0) return customFormData; // nada que subir → intacto
+
+  await mapLimit(jobs, FORM_FILE_CONCURRENCY, async (job) => {
+    // Guardrail por archivo: si supera el tope del servidor, NO intentamos el
+    // POST (sería 413 garantizado). Lanzamos 413 con código claro → classify da
+    // un mensaje accionable y NO reintenta (hay que recapturar con uno liviano).
+    // Tamaño REAL del archivo ≈ 3/4 de la longitud del base64.
+    if (Math.floor((job.dataUrl.length * 3) / 4) > MAX_FILE_BYTES) {
+      throw new ApiError('CONTENT_TOO_LARGE', 'Un archivo adjunto supera el tamaño permitido (máx 5 MB).', 413);
     }
-    if (touched) out[key] = Array.isArray(val) ? processed : processed[0];
+    // El backend valida el MIME segun el kind: 'photo' solo acepta imagenes.
+    // Un campo 'file' (PDF/Word/Excel) DEBE subirse como 'document' o el backend
+    // lo rechaza con 400 y la entrega queda bloqueada para siempre.
+    const evidenceKind = job.kind === 'file' ? 'document' : 'photo';
+    const res = await uploadEvidence(evidenceKind, job.dataUrl, job.sha256);
+    fieldItems[job.key][job.idx] = {
+      kind: job.kind,
+      url: res.url,
+      sha256: res.sha256,
+      filename: job.filename ?? 'archivo',
+      mime: job.mime ?? 'application/octet-stream',
+    };
+  });
+
+  const out: Record<string, unknown> = {};
+  for (const [key, val] of Object.entries(customFormData)) {
+    out[key] = isArrayField[key] ? fieldItems[key] : fieldItems[key][0];
   }
   return out;
 }
@@ -124,6 +192,18 @@ function classify(err: unknown): SyncResult {
         kind: 'conflict',
         serverId: '',
         reason: apiErrorMessage(err, 'Conflicto detectado por el servidor.'),
+        code: err.code,
+        status: err.status,
+      };
+    }
+    // 413 / archivo demasiado grande — NO reintentar (reintentar el mismo archivo
+    // gigante es inútil) pero con mensaje ACCIONABLE: el operador debe recapturar
+    // con un archivo más liviano. Sin esto caía en el genérico "Revisa los datos".
+    if (err.status === 413 || err.code === 'CONTENT_TOO_LARGE') {
+      return {
+        kind: 'error',
+        message: 'Un archivo adjunto es demasiado grande. Reemplázalo por uno más liviano (máx 5 MB) y vuelve a registrar.',
+        retryable: false,
         code: err.code,
         status: err.status,
       };

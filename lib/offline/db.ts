@@ -1263,6 +1263,18 @@ export function unblockDelivery(id: string): void {
   });
 }
 
+/**
+ * Borra una entrega local de la cola. Se usa para DESCARTAR entregas atascadas
+ * que no pueden sincronizar (p.ej. con un archivo demasiado grande que el
+ * servidor siempre rechaza): tras borrarla, el beneficiario vuelve a quedar
+ * disponible para recapturar con un archivo liviano. No toca el servidor (estas
+ * entregas nunca llegaron a crearse allá).
+ */
+export function deleteDelivery(id: string): void {
+  const db = getDB();
+  db.runSync(`DELETE FROM pending_deliveries WHERE id = ?`, [id]);
+}
+
 /** Cuántos deliveries tienen status="pending" o "error" listos para reintentar. */
 export function countPendingSync(): number {
   const db = getDB();

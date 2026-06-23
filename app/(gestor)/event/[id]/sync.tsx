@@ -27,6 +27,7 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Screen } from '../../../../components/Screen';
 import { Button } from '../../../../components/Button';
 import {
+  deleteDelivery,
   listBlockedExceptions,
   listDeliveriesByEvent,
   listPendingCitizensByStatus,
@@ -178,6 +179,37 @@ export default function SyncScreen() {
     for (const b of blocked) unblockDelivery(b.id);
     refresh();
     await processSyncQueue();
+  };
+
+  // Entregas atascadas porque su archivo supera el límite del servidor: no hay
+  // reintento posible (siempre serían rechazadas). Se ofrece descartarlas para
+  // que el beneficiario quede disponible y se recapture con un archivo liviano.
+  const oversized = useMemo(
+    () =>
+      items.filter(
+        (i) =>
+          i.syncStatus === 'blocked' && (i.lastError ?? '').includes('demasiado grande'),
+      ),
+    [items],
+  );
+
+  const discardOversized = () => {
+    Alert.alert(
+      'Descartar entregas con archivo muy grande',
+      `Se eliminarán ${oversized.length} entrega(s) que no pueden subir porque su archivo supera el límite. ` +
+        'Los beneficiarios quedarán disponibles para registrarlos de nuevo con un archivo más liviano. ¿Continuar?',
+      [
+        { text: 'Cancelar', style: 'cancel' },
+        {
+          text: 'Descartar',
+          style: 'destructive',
+          onPress: () => {
+            for (const o of oversized) deleteDelivery(o.id);
+            refresh();
+          },
+        },
+      ],
+    );
   };
 
   return (
@@ -356,6 +388,16 @@ export default function SyncScreen() {
               label={`Reintentar las ${buckets.blocked + buckets.conflict} bloqueadas`}
               variant="secondary"
               onPress={() => void retryBlocked()}
+              disabled={progress.inFlight}
+            />
+          </View>
+        )}
+        {oversized.length > 0 && (
+          <View style={{ marginTop: spacing.sm }}>
+            <Button
+              label={`Descartar ${oversized.length} con archivo muy grande`}
+              variant="secondary"
+              onPress={discardOversized}
               disabled={progress.inFlight}
             />
           </View>

@@ -51,7 +51,7 @@ import {
 } from '../../../../../lib/api/services/events.service';
 import { useAuthStore } from '../../../../../lib/stores/auth-store';
 import { sha256OfDataUrl, sha256OfDelivery, shortHash } from '../../../../../lib/crypto/hash';
-import { processSyncQueue } from '../../../../../lib/sync/queue';
+import { processSyncQueue, subscribeQueueEvents } from '../../../../../lib/sync/queue';
 import {
   colors,
   fontSizes,
@@ -1152,6 +1152,52 @@ function SuccessStep({
   onBackToList: () => void;
   onCaptureNext: () => void;
 }) {
+  // Feedback de subida en vivo: al guardar se dispara processSyncQueue(); aquí
+  // escuchamos los eventos de la cola para ESTA entrega (offlineId) y mostramos
+  // el estado real (subiendo / subida / reintentando / pendiente / falló) en
+  // vez de un "pendiente" fijo. Con internet el operador ve el resultado antes
+  // de pasar al siguiente; sin red, el fallback a ~12s lo deja en "pendiente".
+  const [uploadState, setUploadState] = useState<
+    'subiendo' | 'subida' | 'reintentando' | 'pendiente' | 'conflicto' | 'fallo'
+  >('subiendo');
+  const [failMsg, setFailMsg] = useState<string | null>(null);
+
+  useEffect(() => {
+    const unsub = subscribeQueueEvents((e) => {
+      if (e.type === 'item-done' && e.id === offlineId) {
+        const r = e.result;
+        if (r.kind === 'ok') setUploadState('subida');
+        else if (r.kind === 'conflict') setUploadState('conflicto');
+        else if (r.kind === 'error') {
+          if (r.retryable) setUploadState('reintentando');
+          else {
+            setUploadState('fallo');
+            setFailMsg(r.message);
+          }
+        }
+      } else if (e.type === 'retry-scheduled') {
+        setUploadState((s) => (s === 'subiendo' ? 'reintentando' : s));
+      }
+    });
+    // Sin veredicto en ~12s (sin red, o en cola detrás de otras): queda pendiente.
+    const t = setTimeout(() => {
+      setUploadState((s) => (s === 'subiendo' ? 'pendiente' : s));
+    }, 12_000);
+    return () => {
+      unsub();
+      clearTimeout(t);
+    };
+  }, [offlineId]);
+
+  const statusView = {
+    subiendo: { text: '⬆️ Subiendo entrega…', color: colors.warning },
+    subida: { text: '✅ Subida y sincronizada', color: colors.success },
+    reintentando: { text: '🔄 Reintentando… se subirá sola', color: colors.warning },
+    pendiente: { text: '⏳ Pendiente de sincronizar', color: colors.warning },
+    conflicto: { text: '⚠️ Requiere revisión (posible duplicado)', color: colors.warning },
+    fallo: { text: `⚠️ ${failMsg ?? 'No se pudo subir'}`, color: colors.error },
+  }[uploadState];
+
   return (
     <View style={styles.successWrap}>
       <View style={styles.successIcon}>
@@ -1187,8 +1233,8 @@ function SuccessStep({
         )}
         <View style={styles.divider} />
         <Text style={styles.successLabel}>Estado</Text>
-        <Text style={[styles.successMono, { color: colors.warning }]}>
-          ⏳ Pendiente de sincronizar
+        <Text style={[styles.successMono, { color: statusView.color }]}>
+          {statusView.text}
         </Text>
       </View>
 

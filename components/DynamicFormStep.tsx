@@ -179,6 +179,17 @@ export function DynamicFormStep({
       // Leer el archivo como base64 (API File de expo-file-system v19). El SHA-256
       // se calcula sobre ese contenido → misma cadena de integridad que las fotos.
       const base64 = await new File(asset.uri).base64();
+      // Red de seguridad: algunos pickers de Android NO reportan asset.size (queda
+      // undefined → el tope de arriba se salta). Revalidamos con el tamaño REAL del
+      // contenido leído (base64 → ~3/4 de bytes) antes de adjuntarlo.
+      const realBytes = Math.floor((base64.length * 3) / 4);
+      if (realBytes > MAX_FILE_BYTES) {
+        Alert.alert(
+          'Archivo muy pesado',
+          `El archivo pesa ${(realBytes / 1048576).toFixed(1)} MB y el máximo es ${MAX_FILE_BYTES / 1048576} MB. Elige uno más liviano o toma una foto del documento.`,
+        );
+        return;
+      }
       const mime = asset.mimeType ?? 'application/octet-stream';
       const dataUrl = `data:${mime};base64,${base64}`;
       const sha256 = await sha256OfDataUrl(dataUrl);
